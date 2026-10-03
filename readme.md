@@ -1,12 +1,62 @@
 # Travel Comparator — Architecture
 
 **Document type:** Target architecture and implementation contract
-**Status:** Architecture defined; application implementation and Azure deployment are not present in this repository yet.
+**Status:** Architecture defined; a local runnable implementation and ACA/Bicep deployment pipeline are present. A live Azure deployment has not been performed.
 **Last updated:** 2026-10-03
 
-This document describes how to build and operate the Travel Comparator as a secure, cost-conscious MVP: develop and test on a laptop first, then deploy to Azure. It also records the boundaries to preserve if payment capabilities are introduced later. It is not a claim that the controls are already implemented or that the system is PCI DSS compliant.
+This document records the implementation contract and how to operate the Travel Comparator as a cost-conscious MVP. Local application controls and Azure deployment templates are implemented, but local Docker smoke tests and live Azure rollout have not been performed. The document also records the boundaries to preserve if payment capabilities are introduced later; the system is not PCI DSS compliant.
 
 The current product behavior and demo sequence are in [Travel_Comparator_execution_steps.md](./Travel_Comparator_execution_steps.md). The concise, enforceable architecture spine is in [ARCHITECTURE-SPINE.md](./_bmad-output/planning-artifacts/architecture/architecture-multi-agent-2026-10-03/ARCHITECTURE-SPINE.md).
+
+## Runnable implementation
+
+The application is Python 3.14, managed with `uv`. Its REST API and CLI share the same request-scoped coordinator; the coordinator calls private A2A Weather and Travel Advisor workers. The weather worker owns its MCP-over-stdio child. Local Compose defaults to deterministic stubs and publishes only the API on `127.0.0.1:8080`.
+
+### Run locally
+
+Prerequisites: Python 3.14, `uv`, and Docker Compose. From the repository root:
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env: set two different random local tokens, each at least 24 characters.
+docker compose --env-file .env -f deploy/compose.yaml up --build -d
+docker compose --env-file .env -f deploy/compose.yaml ps
+```
+
+The default `STUB_PROVIDERS=true` mode needs no cloud identity, OpenAI key, or live-provider access. Run the CLI in the API container:
+
+```powershell
+docker compose --env-file .env -f deploy/compose.yaml exec api travel-comparator "Compare Austin, Miami, and Denver for a 5-day trip from New York"
+```
+
+Or submit the canonical v1 request to the local API:
+
+```powershell
+$body = '{"origin":"New York","destinations":["Denver","Austin","Miami"],"duration_days":5}'
+$env:LOCAL_API_TOKEN = '<same local API token as .env>'
+Invoke-RestMethod -Uri http://127.0.0.1:8080/api/v1/comparisons `
+  -Method Post -ContentType application/json `
+  -Headers @{ Authorization = "Bearer $env:LOCAL_API_TOKEN" } -Body $body
+```
+
+The local token must match `LOCAL_API_TOKEN` in `.env`. `GET /health/live` and `GET /health/ready` are also available. Stop the stack with `docker compose --env-file .env -f deploy/compose.yaml down`.
+
+### Data and provider limits
+
+- Stub mode is deterministic for tests and local demos. With `STUB_PROVIDERS=false`, weather comes from the National Weather Service; outbound access to `api.weather.gov` and a real operator contact in `NWS_USER_AGENT` are required.
+- The travel reference data is illustrative, not a live fare/hotel search and not bookable. Every synthetic amount is labelled as such. The documented five-day NYC sample totals remain Denver **$900**, Austin **$1,030**, and Miami **$1,665**.
+- Live-mode comparison narrative and natural-language CLI parsing require an OpenAI API key. For local use, keep it only in `.env`; in Azure it is resolved by the API container from the configured Key Vault secret. Do not put credentials in request bodies, source files, or logs.
+- No payment-card data is accepted. The service is not PCI DSS certified or a payment system.
+
+### Azure deployment
+
+The Bicep templates and GitHub Actions workflows are in `deploy/bicep/` and `.github/workflows/`. CI tests, lints, audits dependencies, validates Compose, and compiles Bicep. The development workflow builds/scans an image, publishes an SBOM, pushes to ACR, resolves the pushed digest, and deploys by digest. Production promotion verifies the successful development run's artifact, rescans and deploys the same image digest only after the `production` GitHub Environment's configured approval gates.
+
+Configure protected `development` and `production` GitHub Environments and their environment variables before enabling deployment. Required variables are `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `NAME_PREFIX`, `ACR_NAME`, `ACA_ENVIRONMENT_NAME`, `KEY_VAULT_NAME`, `OPENAI_SECRET_URI`, `OIDC_ISSUER`, `OIDC_JWKS_URL`, `NWS_USER_AGENT`, `USER_API_AUDIENCE`, `WEATHER_A2A_AUDIENCE`, and `TRAVEL_A2A_AUDIENCE`. Use a lowercase alphanumeric/hyphen `NAME_PREFIX` (3–10 characters, starts with a letter, ends alphanumeric) and globally unique lowercase alphanumeric ACR name (5–50 characters). The ACR and Key Vault must be in the deployment resource group. Configure Azure federated credentials for the GitHub repository/environment subjects and grant the deployment principal only the resource-group permissions needed to provision the foundation, role assignments, and Container Apps.
+
+Pre-provision a Key Vault with **RBAC authorization enabled** and a versioned OpenAI secret URI. The deployment creates distinct API, Weather Agent, and Travel Advisor user-assigned identities. Entra app registrations, audiences, the `TravelComparator.User` API role, each worker's `invoke` role, and approved user/group assignments are external prerequisites; grant the coordinator identities `invoke` on both worker APIs. The API identity receives Key Vault Secrets User and ACR pull; workers receive ACR pull only. Allow outbound NWS/OpenAI access as applicable. Set required reviewers/branch restrictions on production in GitHub; the workflow cannot configure those repository controls for you.
+
+The API rate limit, response idempotency cache, and agent task cache are bounded in-process memory; they are not shared across replicas and are lost on restart/scale-to-zero. After successful development deployment, use the reported digest and development run ID as the `image_digest` and `development_run_id` inputs when manually running **Promote production** on `main`. The workflow checks the run succeeded and verifies its artifact contains that exact digest before promotion. Re-run it with an earlier successful development digest/run ID to roll back. The local Compose smoke test and actual Azure deployment still need to be run in environments with Docker/Azure access.
 
 ## 1. Architecture at a glance
 
@@ -82,50 +132,41 @@ Use the same typed configuration contract across Compose and Azure. Required set
 - The coordinator owns a 30-second end-to-end deadline. Propagate remaining time to workers; permit at most one retry for explicitly retryable, idempotent operations with backoff inside that deadline. Reuse A2A work via a request idempotency key after uncertain completion; never launch duplicate work or retry authentication/validation errors.
 - Return HTTP 200 for complete or partial comparisons, 4xx for caller/authentication errors, 502 when providers return no usable comparison, and 504 when the coordinator deadline expires. Agents use the same result/error envelope and map A2A task outcomes consistently.
 
-## 4. Proposed implementation structure
+## 4. Implemented project structure
 
-The repository currently has no application source, dependency manifest, tests, Docker Compose file, or Azure infrastructure. This is a target layout to create; it is not an inventory of existing code.
+The main code and runtime boundaries are:
 
 ```text
 src/travel_comparator/
-  api/                 # REST routes, authentication boundary, request/response schemas
-  cli/                 # local adapter over application service
-  application/         # coordinator use cases, fan-out, conflict detection, synthesis
-  contracts/           # canonical request/result and protocol-boundary schemas
-  agents/
-    weather/           # Weather A2A service and bundled MCP process lifecycle
-    travel/            # Travel Advisor A2A service and reference-data access
-  providers/
-    openai/            # model client adapter
-    nws/               # weather-source adapter
-data/
-  travel_data.json     # reviewed, versioned MVP reference data
-tests/
-  unit/
-  contract/
-  integration/
-  e2e/
-deploy/
-  compose.yaml         # laptop topology
-  bicep/               # Azure resources and role assignments
-.github/workflows/     # validation, image build, deployment
+  api/                 # authenticated versioned REST API
+  cli/                 # local adapter over the coordinator
+  application/         # parallel fan-out, follow-up, deterministic recommendation
+  contracts/           # canonical v1 API/A2A domain schemas
+  agents/              # Weather and Travel Advisor A2A workers
+  providers/nws/        # weather MCP stdio server and NWS client
+  providers/openai/     # natural-language parser and narrative adapter
+data/travel_data.json   # illustrative, versioned travel estimates
+tests/                  # unit, contract, integration, end-to-end, and deployment checks
+deploy/compose.yaml     # loopback API and private local workers
+deploy/bicep/           # ACA, ACR, identity, and Key Vault role assignments
+.github/workflows/      # CI, development deploy, production promotion
 ```
 
 Keep dependencies flowing inward: adapters depend on application/domain contracts; domain logic does not depend on FastAPI, Azure SDKs, the OpenAI SDK, or transport frameworks. Document typed per-service configuration keys, required/optional settings, local/cloud endpoint mappings, and startup validation. Fail startup when required values are missing; never silently choose a production endpoint. Do not add a shared database or message broker until durable or asynchronous business requirements require one.
 
 ## 5. Local development and test architecture
 
-The laptop environment is the first supported deployment target. Implement the services as containers and run them through Docker Compose so service names, ports, startup order, and environment configuration match the cloud topology as closely as practical.
+The laptop environment is the first supported deployment target. The services run through Docker Compose so service names, ports, startup order, and environment configuration match the cloud topology as closely as practical.
 
-**Target local workflow (after the application scaffold and Compose file are implemented):**
+**Local workflow** (full commands are in [Travel_Comparator_execution_steps.md](./Travel_Comparator_execution_steps.md)):
 
-1. Install Python 3.14.x and Docker Desktop/Engine with Compose. Confirm the selected A2A and provider SDK releases support the pinned runtime.
-2. Create a local environment file from a checked-in example. Keep the actual file out of source control; use a developer-owned OpenAI key.
-3. Start the coordinator/API, Weather Agent (with its MCP child process), and Travel Advisor with `docker compose up --build`.
-4. Run unit and contract tests without external credentials, then run integration tests against deterministic NWS/OpenAI stubs. Use a small, explicit smoke test with live providers only when needed.
-5. Stop the stack with `docker compose down`. Do not put secrets in command history, test snapshots, logs, or committed fixtures.
+1. Install Python 3.14.x, `uv`, and Docker Engine/Compose.
+2. Copy `.env.example` to `.env`, replace the two local credentials with distinct random values of at least 24 characters, and keep `.env` out of source control.
+3. Start API and workers with `docker compose --env-file .env -f deploy/compose.yaml up --build`; the default `STUB_PROVIDERS=true` mode needs no live credentials.
+4. Run unit, contract, and integration tests without external credentials. The MCP subprocess test and API integration tests use deterministic fixtures.
+5. Smoke-test the API and CLI, then stop with `docker compose --env-file .env -f deploy/compose.yaml down`. Do not place secrets in request data, logs, or committed fixtures.
 
-Use Python 3.14.x and `uv` for dependency management, then commit `uv.lock` and pin the tested image digest before producing a release. Confirm that the chosen A2A and provider SDKs support this runtime. Treat FastAPI 0.142.2 as the current candidate on 2026-10-03, not as a tested lockfile pin; confirm compatibility before locking. Keep provider clients behind narrow adapters so unit and contract tests do not need live services. The execution guide currently describes manual terminal startup; update it to match the Compose workflow when implementation begins.
+Runtime dependencies are pinned in `pyproject.toml` and `uv.lock`. The Docker image is built once for each development deployment; the pipeline records and deploys its registry digest instead of a mutable tag. Provider clients are behind narrow adapters so automated tests do not need live services. The actual Docker/Compose startup still needs validation on a Docker-enabled host.
 
 ### Required test layers
 
@@ -133,9 +174,9 @@ Use Python 3.14.x and `uv` for dependency management, then commit `uv.lock` and 
 | --- | --- |
 | Unit | Query parsing/validation, conflict detection, pricing/event calculations, synthesis input shaping, timeout/error handling |
 | Contract | A2A Agent Cards and task payloads, MCP tool input/output, API request/response schemas, compatibility fixtures |
-| Integration | Compose startup, internal service discovery, Weather Agent-to-MCP lifecycle, external-provider adapters with stubs |
-| End-to-end | Representative budget, weather-risk, event-conflict, and multi-city comparisons; verify no unsupported data is presented as fact |
-| Security/release | Dependency and container scanning, secret scanning, input-size/rate limits, auth-negative tests, SBOM generation |
+| Integration | API behavior, Weather Agent-to-MCP stdio lifecycle, provider behavior with stubs; Compose startup is an operator smoke check |
+| End-to-end | API -> A2A worker -> MCP stub multi-city comparison; verify deterministic totals and source provenance |
+| Security/release | Dependency and container scanning, input-size/rate limits, auth-negative tests, SBOM generation |
 | Resilience | Worker timeout/unavailability, model API throttling, malformed agent/model output, graceful shutdown, bounded retry behavior |
 
 Live integration tests must be separately selected and must not be a prerequisite for deterministic pull-request checks.
@@ -146,14 +187,14 @@ Live integration tests must be separately selected and must not be a prerequisit
 
 - **Identity and access:** Require the `TravelComparator.User` Entra ID application role for cloud callers, assigned explicitly; deny anonymous access and self-registration. Each Container App uses a distinct managed identity; A2A workers validate issuer, audience, expiry, and the `invoke` role and authorize only the coordinator identity.
 - **Local trust:** Run the direct CLI as the developer's signed-in OS user. Bind the API to loopback in laptop mode; Compose workers require a distinct local-only coordinator credential. Never reuse local credentials in Azure, include secret files in images, or pass provider credentials to the MCP child process.
-- **Ingress:** Only the coordinator/API app may have external ingress. Worker apps use internal ingress and must not be targets of environment-level HTTP routes, gateways, or alternate public endpoints. Validate this invariant in Bicep tests and with an external reachability smoke test.
+- **Ingress:** Only the coordinator/API app may have external ingress. Worker apps use internal ingress and must not be targets of environment-level HTTP routes, gateways, or alternate public endpoints. Bicep source checks and deployment smoke steps verify the configured ingress flags; an external reachability test remains an Azure rollout prerequisite.
 - **Secrets:** `.env`/local secret files are ignored by Git and created from examples with placeholders only. Store the OpenAI credential in Key Vault; only the coordinator identity may read it. Use managed identity, rotate provider credentials, and never put secrets in prompts, A2A payloads, logs, image layers, or MCP subprocess environments.
-- **Input and agent safety:** Bound request sizes, validate city/date values and schemas, reject unsupported tool requests, constrain outbound hosts, and treat prompt instructions and agent output as untrusted data.
+- **Input and agent safety:** Bound request sizes, validate city/date values and schemas, reject unsupported tool requests, and treat prompt instructions and agent output as untrusted data. Worker URLs are configured by deployment rather than user text; network-level egress allowlisting and private/link-local/metadata address blocking remain pre-production work.
 - **Provider data minimization:** Send OpenAI only the normalized trip fields needed to generate the recommendation. Do not send secrets, payment data, or unnecessary personal data to OpenAI or other third parties. Do not log full prompts or responses; confirm provider retention, training, and data-processing terms before production.
 - **Egress:** Restrict application clients to configured HTTPS provider hosts: coordinator to OpenAI, Weather Agent to NWS, and no provider egress from the Travel Advisor. Enforce the destination allow-list in code/configuration, validate TLS certificates, block private/link-local/metadata addresses, and reject redirects to unapproved hosts. Choose network-level egress enforcement before production and account for its cost.
 - **Transport and exposure:** HTTPS at public ingress; workers have internal-only ingress; no debug interface or MCP endpoint is public.
-- **Telemetry:** Propagate a generated server-side request/task ID. Log only allow-listed service, duration, status, and error-category fields; exclude raw request/response bodies, prompts, itinerary/location fields, authorization headers, provider exception bodies, PAN/CVV, payment tokens, and secrets. Sanitize untrusted strings and set production retention/access policies.
-- **Abuse and spend controls:** Enforce caller rate limits, request/time limits, maximum city count, bounded parallelism, retry budgets, and OpenAI token/cost budgets.
+- **Telemetry:** Propagate a generated server-side request/task ID. Current logs emit bounded service/error-category fields and do not log request/response bodies, prompts, itinerary/location fields, authorization headers, provider exception bodies, PAN/CVV, payment tokens, or secrets. Metrics/traces, duration/latency monitoring, and production retention/access policies remain to be configured.
+- **Abuse and spend controls:** Enforce caller rate limits, request/time limits, maximum city count, bounded parallelism, retry budgets, and OpenAI token/cost budgets. The implementation applies a 60-request/minute per-principal in-process limit, request-size/deadline limits, max four cities, and bounded worker concurrency. Cross-replica/shared quotas, OpenAI token or spend budgets, and operator alerts are not implemented; configure these before production.
 - **Supply chain:** Lock dependencies, scan source/dependencies/images, generate an SBOM, and deploy immutable reviewed image digests.
 
 ### Reliability behavior
@@ -216,7 +257,7 @@ flowchart TB
 | Network egress | Allow only configured HTTPS destinations: coordinator to OpenAI, Weather Agent to NWS, and Travel Advisor to none. Review provider domains and implement network-level egress enforcement before production. |
 | Configuration | Keep non-secret configuration separate from secrets. Use distinct development and production identities, secrets, and data. |
 
-Scale based on HTTP concurrency and observed load with explicit minimum/maximum replica bounds. Scale-to-zero is the cost-effective MVP default when occasional cold starts are acceptable. Before production, decide latency/availability objectives and set a minimum replica if the cold-start behavior conflicts with them. Add request and concurrency limits, per-principal rate limits, budgets/alerts, and model-token caps before exposing the API; do not assume scaling limits alone cap provider charges.
+The Bicep templates set scale-to-zero with a maximum of three replicas for each app. Before production, decide latency/availability objectives and set a minimum replica if the cold-start behavior conflicts with them. The per-instance API idempotency/rate-limit caches are bounded and reset when replicas stop; a shared store would be required if global/durable semantics become necessary. Add budgets/alerts and model-token caps before exposing the API; do not assume scaling limits alone cap provider charges.
 
 ### Build, deploy, and rollback
 
@@ -237,11 +278,11 @@ Each result should identify its source and relevant freshness/time window. Keep 
 
 ## 9. Delivery sequence and open decisions
 
-1. Scaffold the Python application, lock dependencies, define canonical schemas, and implement deterministic unit/contract tests.
-2. Implement the coordinator, worker boundaries, REST API and CLI adapters; retain explicit provider clients and stubs.
-3. Add Dockerfiles and Compose; prove local startup, health checks, external-provider stubs, and representative end-to-end scenarios.
-4. Add Bicep and Azure dev deployment, Entra ID auth, ACR, Key Vault references/managed identity, internal service routing, telemetry, budgets, and deployment workflow.
-5. Measure real latency/cost and set SLOs, rate limits, replica bounds, retention, and alerts before production rollout.
+1. **Implemented:** Python application, locked dependencies, canonical schemas, coordinator, workers, API/CLI, and deterministic unit/contract/integration tests.
+2. **Implemented:** Docker image, Compose topology, Bicep infrastructure, and CI/development/production digest-based workflow definitions.
+3. **Still required:** Run local Compose build/start/readiness smoke tests on a Docker-enabled host.
+4. **Still required:** Provision Entra app roles/assignments, GitHub OIDC federations/environments, Key Vault, network egress controls, and deploy/test Azure development; then approve production promotion.
+5. **Before production:** Measure real latency/cost; set SLOs, global quotas, token budgets, replica/retention bounds, alerting, and network-egress policies.
 6. Before any payment feature, obtain a payment/data-flow design and qualified PCI scope assessment.
 
 Decisions intentionally left to implementation/product discovery: exact client sign-in journey and any roles beyond `TravelComparator.User`; production SLOs and load; Azure region and network/private-endpoint requirements; network-level egress design and cost; operational retention/alert thresholds; commercial data-provider licensing/freshness; and any future payment scope. Do not treat these as already resolved.
@@ -251,6 +292,6 @@ Decisions intentionally left to implementation/product discovery: exact client s
 - [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) — current released version 1.0.0 at the time of architecture.
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/specification/) — specification served as version 2026-07-28 at the time of architecture.
 - [Azure Container Apps overview](https://learn.microsoft.com/en-us/azure/container-apps/overview), [scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app), [service communication](https://learn.microsoft.com/en-us/azure/container-apps/connect-apps), [ingress](https://learn.microsoft.com/en-us/azure/container-apps/ingress-overview), [managed identities](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity), and [secrets](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets).
-- [FastAPI release notes](https://fastapi.tiangolo.com/release-notes/) and [PyPI project](https://pypi.org/project/fastapi/). The target framework/runtime versions in the spine must be locked and revalidated when implementation starts.
-- [Python version status](https://devguide.python.org/versions/) — Python 3.14 is in bug-fix support as of 2026-10-03; pin the tested image digest and recheck A2A/provider SDK compatibility.
+- [FastAPI release notes](https://fastapi.tiangolo.com/release-notes/) and [PyPI project](https://pypi.org/project/fastapi/). FastAPI and provider dependencies are pinned in `pyproject.toml`/`uv.lock`; revalidate compatibility when upgrading.
+- [Python version status](https://devguide.python.org/versions/) — Python 3.14 is the project runtime; the CI, lockfile, and container must be kept aligned when upgrading.
 - [PCI Security Standards Council document library](https://www.pcisecuritystandards.org/document_library/). Use the current official standard and applicable validation documents when payment scope is defined.

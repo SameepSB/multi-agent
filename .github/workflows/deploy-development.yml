@@ -1,0 +1,186 @@
+name: Deploy development
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    environment: development
+    concurrency:
+      group: travel-comparator-development
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.9.18
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: uv
+      - name: Verify source before release
+        run: |
+          trap 'rm -f requirements-audit.txt' EXIT
+          uv sync --locked --dev
+          uv run --locked ruff format --check src tests
+          uv run --locked ruff check src tests
+          uv run --locked pytest -q
+          uv export --locked --no-emit-project --format requirements-txt --output-file requirements-audit.txt
+          uv run --locked pip-audit --strict --requirement requirements-audit.txt
+      - name: Compile deployment templates
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az bicep install
+            az bicep build --file deploy/bicep/foundation.bicep --stdout > /dev/null
+            az bicep build --file deploy/bicep/main.bicep --stdout > /dev/null
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Provision development foundation
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          az deployment group create \
+            --name "travel-foundation-${GITHUB_RUN_ID}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file deploy/bicep/foundation.bicep \
+            --parameters namePrefix="$NAME_PREFIX" acrName="$ACR_NAME" \
+            --output none
+      - name: Sign in to Azure Container Registry
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: az acr login --name "$ACR_NAME"
+      - name: Build image and source SBOM
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "travel-comparator:${IMAGE_TAG}" .
+      - name: Scan release image
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: travel-comparator:${{ github.sha }}
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Generate source SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: travel-comparator:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: travel-comparator.sbom.json
+          upload-artifact: false
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: travel-comparator-sbom-${{ github.sha }}
+          path: travel-comparator.sbom.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Push immutable source tag
+        id: image
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          registry="$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)"
+          tagged_image="${registry}/travel-comparator:${IMAGE_TAG}"
+          docker tag "travel-comparator:${IMAGE_TAG}" "$tagged_image"
+          docker push "$tagged_image"
+          digest="$(docker pull "$tagged_image" >/dev/null && docker inspect --format='{{index .RepoDigests 0}}' "$tagged_image" | cut -d@ -f2)"
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Registry did not return a valid image digest." >&2
+            exit 1
+          fi
+          echo "image_ref=${registry}/travel-comparator@${digest}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Deploy development apps
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          API_AUDIENCE: ${{ vars.USER_API_AUDIENCE }}
+          ENVIRONMENT_NAME: ${{ vars.ACA_ENVIRONMENT_NAME }}
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          NWS_USER_AGENT: ${{ vars.NWS_USER_AGENT }}
+          OPENAI_SECRET_URI: ${{ vars.OPENAI_SECRET_URI }}
+          OIDC_ISSUER: ${{ vars.OIDC_ISSUER }}
+          OIDC_JWKS_URL: ${{ vars.OIDC_JWKS_URL }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          TRAVEL_AUDIENCE: ${{ vars.TRAVEL_A2A_AUDIENCE }}
+          WEATHER_AUDIENCE: ${{ vars.WEATHER_A2A_AUDIENCE }}
+        run: |
+          az deployment group create \
+            --name "travel-development-${GITHUB_RUN_ID}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file deploy/bicep/main.bicep \
+            --parameters \
+              namePrefix="$NAME_PREFIX" \
+              containerImage="$IMAGE_REF" \
+              keyVaultName="$KEY_VAULT_NAME" \
+              openAiSecretUri="$OPENAI_SECRET_URI" \
+              oidcIssuer="$OIDC_ISSUER" \
+              oidcJwksUrl="$OIDC_JWKS_URL" \
+              nwsUserAgent="$NWS_USER_AGENT" \
+              userApiAudience="$API_AUDIENCE" \
+              weatherA2AAudience="$WEATHER_AUDIENCE" \
+              travelA2AAudience="$TRAVEL_AUDIENCE" \
+              acrName="$ACR_NAME" \
+              environmentName="$ENVIRONMENT_NAME" \
+            --output none
+      - name: Verify ingress and readiness
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          api="${NAME_PREFIX}-api"
+          weather="${NAME_PREFIX}-weather"
+          travel="${NAME_PREFIX}-travel"
+          test "$(az containerapp show --name "$api" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.external --output tsv)" = "true"
+          test "$(az containerapp show --name "$weather" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.external --output tsv)" = "false"
+          test "$(az containerapp show --name "$travel" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.external --output tsv)" = "false"
+          fqdn="$(az containerapp show --name "$api" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn --output tsv)"
+          for attempt in $(seq 1 18); do
+            if curl --fail --silent --show-error "https://${fqdn}/health/ready"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Development API readiness probe failed." >&2
+          exit 1
+      - name: Record promotion digest
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          printf '%s\n%s\n' "$IMAGE_REF" "$GITHUB_SHA" > promotion-image.txt
+          {
+            echo "Development image for production promotion:"
+            echo "\`${IMAGE_REF}\`"
+            echo "Development run ID: \`${GITHUB_RUN_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish promotion record
+        uses: actions/upload-artifact@v4
+        with:
+          name: travel-comparator-image-${{ github.run_id }}
+          path: promotion-image.txt
+          if-no-files-found: error
+          retention-days: 90

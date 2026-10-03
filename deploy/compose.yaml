@@ -1,0 +1,127 @@
+name: travel-comparator
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command:
+      - uvicorn
+      - travel_comparator.api.main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    environment:
+      APP_ENV: local
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_PORT: 8080
+      WEATHER_AGENT_URL: http://weather-agent:5001
+      TRAVEL_AGENT_URL: http://travel-agent:5003
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+      MAX_CITIES: ${MAX_CITIES:-4}
+      LOCAL_API_TOKEN: ${LOCAL_API_TOKEN:?Set a distinct local API token in .env}
+      LOCAL_COORDINATOR_TOKEN: ${LOCAL_COORDINATOR_TOKEN:?Set a distinct local worker token in .env}
+      STUB_PROVIDERS: "${STUB_PROVIDERS:-true}"
+      NWS_USER_AGENT: ${NWS_USER_AGENT:-}
+      WEATHER_A2A_AUDIENCE: travel-comparator-weather-local
+      TRAVEL_A2A_AUDIENCE: travel-comparator-travel-local
+      TRAVEL_DATA_PATH: /app/data/travel_data.json
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    depends_on:
+      weather-agent:
+        condition: service_healthy
+      travel-agent:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks: [travel]
+    restart: unless-stopped
+
+  weather-agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command:
+      - uvicorn
+      - travel_comparator.agents.weather_server:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5001"
+    environment:
+      APP_ENV: local
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+      MAX_CITIES: ${MAX_CITIES:-4}
+      LOCAL_COORDINATOR_TOKEN: ${LOCAL_COORDINATOR_TOKEN:?Set a distinct local worker token in .env}
+      STUB_PROVIDERS: "${STUB_PROVIDERS:-true}"
+      WEATHER_A2A_AUDIENCE: travel-comparator-weather-local
+      TRAVEL_A2A_AUDIENCE: travel-comparator-travel-local
+      TRAVEL_DATA_PATH: /app/data/travel_data.json
+    expose: ["5001"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health/live', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks: [travel]
+    restart: unless-stopped
+
+  travel-agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command:
+      - uvicorn
+      - travel_comparator.agents.travel_server:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5003"
+    environment:
+      APP_ENV: local
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+      MAX_CITIES: ${MAX_CITIES:-4}
+      LOCAL_COORDINATOR_TOKEN: ${LOCAL_COORDINATOR_TOKEN:?Set a distinct local worker token in .env}
+      STUB_PROVIDERS: "${STUB_PROVIDERS:-true}"
+      WEATHER_A2A_AUDIENCE: travel-comparator-weather-local
+      TRAVEL_A2A_AUDIENCE: travel-comparator-travel-local
+      TRAVEL_DATA_PATH: /app/data/travel_data.json
+    expose: ["5003"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5003/health/live', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks: [travel]
+    restart: unless-stopped
+
+networks:
+  travel:
+    driver: bridge

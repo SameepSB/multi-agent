@@ -1,0 +1,138 @@
+{
+  "data_version": "1.0.0",
+  "data_owner": "Travel Advisor",
+  "cities": [
+    {
+      "name": "Austin",
+      "state": "TX",
+      "latitude": 30.2672,
+      "longitude": -97.7431,
+      "hotel_per_night_usd": 150,
+      "travel_time_hours": {"New York": 3.5, "Los Angeles": 3.0, "Chicago": 2.5, "Dallas": 1.0, "Atlanta": 2.0},
+      "flight_usd": {"New York": 280, "Los Angeles": 220, "Chicago": 190, "Dallas": 90, "Atlanta": 170},
+      "stub_weather": "CAUTION",
+      "stub_high_f": 98,
+      "stub_summary": "Hot and sunny; local deterministic fixture",
+      "stub_alerts": ["Heat Advisory (synthetic fixture)"],
+      "events": [
+        {"name": "SXSW", "months": [3], "start_day": 7, "end_day": 15, "severity": "severe", "hotel_multiplier": 2.0},
+        {"name": "Austin Food & Wine", "months": [4], "start_day": 1, "end_day": 30, "severity": "moderate", "hotel_multiplier": 1.15}
+      ]
+    },
+    {
+      "name": "Miami",
+      "state": "FL",
+      "latitude": 25.7617,
+      "longitude": -80.1918,
+      "hotel_per_night_usd": 297,
+      "travel_time_hours": {"New York": 3.0, "Los Angeles": 5.0, "Chicago": 3.0, "Dallas": 2.5, "Atlanta": 2.0},
+      "flight_usd": {"New York": 180, "Los Angeles": 320, "Chicago": 230, "Dallas": 210, "Atlanta": 140},
+      "stub_weather": "GO",
+      "stub_high_f": 84,
+      "stub_summary": "Mostly clear; local deterministic fixture",
+      "events": [
+        {"name": "Miami Music Week / Ultra", "months": [3], "start_day": 17, "end_day": 23, "severity": "severe", "hotel_multiplier": 2.0},
+        {"name": "Miami Open", "months": [3], "start_day": 1, "end_day": 31, "severity": "moderate", "hotel_multiplier": 1.2}
+      ]
+    },
+    {
+      "name": "Denver",
+      "state": "CO",
+      "latitude": 39.7392,
+      "longitude": -104.9903,
+      "hotel_per_night_usd": 130,
+      "travel_time_hours": {"New York": 4.5, "Los Angeles": 2.5, "Chicago": 2.5, "Dallas": 2.0, "Atlanta": 3.0},
+      "flight_usd": {"New York": 250, "Los Angeles": 140, "Chicago": 120, "Dallas": 130, "Atlanta": 210},
+      "stub_weather": "GO",
+      "stub_high_f": 72,
+      "stub_summary": "Clear and mild; local deterministic fixture",
+      "events": [
+        {"name": "St. Patrick's Parade", "months": [3], "start_day": 10, "end_day": 20, "severity": "low", "hotel_multiplier": 1.05}
+      ]
+    },
+    {
+      "name": "San Francisco",
+      "state": "CA",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "hotel_per_night_usd": 220,
+      "travel_time_hours": {"New York": 6.0, "Los Angeles": 1.5, "Chicago": 4.5, "Dallas": 3.5, "Atlanta": 5.0},
+      "flight_usd": {"New York": 300, "Los Angeles": 100, "Chicago": 210, "Dallas": 220, "Atlanta": 260},
+      "stub_weather": "GO",
+      "stub_high_f": 65,
+      "stub_summary": "Cool with coastal clouds; local deterministic fixture",
+      "events": [
+        {"name": "Game Developers Conference (GDC)", "months": [3], "start_day": 1, "end_day": 31, "severity": "severe", "hotel_multiplier": 1.8}
+      ]
+    },
+    {
+      "name": "Nashville",
+      "state": "TN",
+      "latitude": 36.1627,
+      "longitude": -86.7816,
+      "hotel_per_night_usd": 145,
+      "travel_time_hours": {"New York": 2.5, "Los Angeles": 4.0, "Chicago": 1.5, "Dallas": 2.0, "Atlanta": 1.0},
+      "flight_usd": {"New York": 180, "Los Angeles": 280, "Chicago": 120, "Dallas": 160, "Atlanta": 100},
+      "stub_weather": "GO",
+      "stub_high_f": 74,
+      "stub_summary": "Partly sunny; local deterministic fixture",
+      "events": [
+        {"name": "CMA Music Fest", "months": [6], "start_day": 1, "end_day": 30, "severity": "severe", "hotel_multiplier": 1.8}
+      ]
+    },
+    {
+      "name": "Seattle",
+      "state": "WA",
+      "latitude": 47.6062,
+      "longitude": -122.3321,
+      "hotel_per_night_usd": 175,
+      "travel_time_hours": {"New York": 6.0, "Los Angeles": 2.5, "Chicago": 4.0, "Dallas": 4.0, "Atlanta": 5.0},
+      "flight_usd": {"New York": 320, "Los Angeles": 130, "Chicago": 220, "Dallas": 260, "Atlanta": 290},
+      "stub_weather": "GO",
+      "stub_high_f": 61,
+      "stub_summary": "Mild with showers; local deterministic fixture",
+      "events": [
+        {"name": "Cherry Blossom Festival", "months": [4], "start_day": 1, "end_day": 30, "severity": "low", "hotel_multiplier": 1.05}
+      ]
+    },
+    {
+      "name": "Phoenix",
+      "state": "AZ",
+      "latitude": 33.4484,
+      "longitude": -112.074,
+      "hotel_per_night_usd": 160,
+      "travel_time_hours": {"New York": 5.0, "Los Angeles": 1.5, "Chicago": 3.5, "Dallas": 2.5, "Atlanta": 4.0},
+      "flight_usd": {"New York": 300, "Los Angeles": 90, "Chicago": 190, "Dallas": 160, "Atlanta": 240},
+      "stub_weather": "CAUTION",
+      "stub_high_f": 101,
+      "stub_summary": "Very hot; local deterministic fixture",
+      "stub_alerts": ["Extreme Heat Warning (synthetic fixture)"],
+      "events": [
+        {"name": "Spring Training", "months": [2, 3], "start_day": 1, "end_day": 31, "severity": "moderate", "hotel_multiplier": 1.2}
+      ]
+    },
+    {
+      "name": "New Orleans",
+      "state": "LA",
+      "latitude": 29.9511,
+      "longitude": -90.0715,
+      "hotel_per_night_usd": 155,
+      "travel_time_hours": {"New York": 3.0, "Los Angeles": 4.0, "Chicago": 2.5, "Dallas": 1.5, "Atlanta": 1.5},
+      "flight_usd": {"New York": 230, "Los Angeles": 300, "Chicago": 190, "Dallas": 130, "Atlanta": 110},
+      "stub_weather": "GO",
+      "stub_high_f": 79,
+      "stub_summary": "Warm and partly cloudy; local deterministic fixture",
+      "events": [
+        {"name": "Mardi Gras", "months": [2, 3], "start_day": 1, "end_day": 10, "severity": "severe", "hotel_multiplier": 2.0},
+        {"name": "Jazz Fest", "months": [4, 5], "start_day": 1, "end_day": 15, "severity": "severe", "hotel_multiplier": 1.8}
+      ]
+    }
+  ],
+  "origins": ["New York", "Los Angeles", "Chicago", "Dallas", "Atlanta"],
+  "provenance": "All flight and hotel amounts are synthetic illustrative estimates from the documented demo scenarios. They are not provider quotes, current market data, or bookable offers.",
+  "nyc_demo_examples": {
+    "Denver": {"flight_usd": 250, "hotel_usd_per_night": 130, "five_day_total_usd": 900},
+    "Austin": {"flight_usd": 280, "hotel_usd_per_night": 150, "five_day_total_usd": 1030},
+    "Miami": {"flight_usd": 180, "hotel_usd_per_night": 297, "five_day_total_usd": 1665}
+  }
+}

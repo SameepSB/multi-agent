@@ -1,0 +1,152 @@
+name: Promote production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: "sha256 digest reported by a successful development deployment"
+        required: true
+        type: string
+      development_run_id:
+        description: "Run ID reported by that successful development deployment"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    concurrency:
+      group: travel-comparator-production
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate immutable digest input
+        env:
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          DEVELOPMENT_RUN_ID: ${{ inputs.development_run_id }}
+        run: |
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "image_digest must be a full sha256 digest." >&2
+            exit 1
+          fi
+          if ! [[ "$DEVELOPMENT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "development_run_id must be a GitHub Actions run ID." >&2
+            exit 1
+          fi
+      - name: Verify successful development promotion record
+        env:
+          DEVELOPMENT_RUN_ID: ${{ inputs.development_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="$(gh run view "$DEVELOPMENT_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,headBranch,headSha,workflowName)"
+          test "$(jq -r .conclusion <<< "$run")" = "success"
+          test "$(jq -r .headBranch <<< "$run")" = "main"
+          test "$(jq -r .workflowName <<< "$run")" = "Deploy development"
+          gh run download "$DEVELOPMENT_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "travel-comparator-image-${DEVELOPMENT_RUN_ID}" \
+            --dir promotion-artifact
+          expected_image="$(sed -n '1p' promotion-artifact/promotion-image.txt)"
+          expected_commit="$(sed -n '2p' promotion-artifact/promotion-image.txt)"
+          test "${expected_image##*@}" = "${{ inputs.image_digest }}"
+          test "$expected_commit" = "$(jq -r .headSha <<< "$run")"
+          echo "Verified promotion record for ${expected_image}."
+      - name: Compile deployment templates
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az bicep install
+            az bicep build --file deploy/bicep/main.bicep --stdout > /dev/null
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Authenticate to registry and verify image exists
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          az acr login --name "$ACR_NAME"
+          registry="$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)"
+          image_ref="${registry}/travel-comparator@${IMAGE_DIGEST}"
+          docker pull "$image_ref"
+          echo "IMAGE_REF=${image_ref}" >> "$GITHUB_ENV"
+      - name: Rescan promoted image
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Deploy production apps
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          API_AUDIENCE: ${{ vars.USER_API_AUDIENCE }}
+          ENVIRONMENT_NAME: ${{ vars.ACA_ENVIRONMENT_NAME }}
+          IMAGE_REF: ${{ env.IMAGE_REF }}
+          KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          NWS_USER_AGENT: ${{ vars.NWS_USER_AGENT }}
+          OPENAI_SECRET_URI: ${{ vars.OPENAI_SECRET_URI }}
+          OIDC_ISSUER: ${{ vars.OIDC_ISSUER }}
+          OIDC_JWKS_URL: ${{ vars.OIDC_JWKS_URL }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          TRAVEL_AUDIENCE: ${{ vars.TRAVEL_A2A_AUDIENCE }}
+          WEATHER_AUDIENCE: ${{ vars.WEATHER_A2A_AUDIENCE }}
+        run: |
+          az deployment group create \
+            --name "travel-production-${GITHUB_RUN_ID}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file deploy/bicep/main.bicep \
+            --parameters \
+              namePrefix="$NAME_PREFIX" \
+              containerImage="$IMAGE_REF" \
+              keyVaultName="$KEY_VAULT_NAME" \
+              openAiSecretUri="$OPENAI_SECRET_URI" \
+              oidcIssuer="$OIDC_ISSUER" \
+              oidcJwksUrl="$OIDC_JWKS_URL" \
+              nwsUserAgent="$NWS_USER_AGENT" \
+              userApiAudience="$API_AUDIENCE" \
+              weatherA2AAudience="$WEATHER_AUDIENCE" \
+              travelA2AAudience="$TRAVEL_AUDIENCE" \
+              acrName="$ACR_NAME" \
+              environmentName="$ENVIRONMENT_NAME" \
+            --output none
+      - name: Verify ingress and readiness
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          api="${NAME_PREFIX}-api"
+          weather="${NAME_PREFIX}-weather"
+          travel="${NAME_PREFIX}-travel"
+          test "$(az containerapp show --name "$api" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.external --output tsv)" = "true"
+          test "$(az containerapp show --name "$weather" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.external --output tsv)" = "false"
+          test "$(az containerapp show --name "$travel" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.external --output tsv)" = "false"
+          fqdn="$(az containerapp show --name "$api" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn --output tsv)"
+          for attempt in $(seq 1 18); do
+            if curl --fail --silent --show-error "https://${fqdn}/health/ready"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Production API readiness probe failed." >&2
+          exit 1
+      - name: Record deployed digest
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
+          DEVELOPMENT_RUN_ID: ${{ inputs.development_run_id }}
+        run: |
+          echo "Production now runs \`${IMAGE_REF}\` from development run \`${DEVELOPMENT_RUN_ID}\`." >> "$GITHUB_STEP_SUMMARY"

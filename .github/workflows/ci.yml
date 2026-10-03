@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.9.18
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: uv
+      - name: Install locked dependencies
+        run: uv sync --locked --dev
+      - name: Check formatting and lint
+        run: |
+          uv run --locked ruff format --check src tests
+          uv run --locked ruff check src tests
+      - name: Run deterministic tests
+        run: uv run --locked pytest -q
+      - name: Audit Python dependencies
+        run: |
+          trap 'rm -f requirements-audit.txt' EXIT
+          uv export --locked --no-emit-project --format requirements-txt --output-file requirements-audit.txt
+          uv run --locked pip-audit --strict --requirement requirements-audit.txt
+      - name: Validate local Compose model
+        run: docker compose --env-file .env.example -f deploy/compose.yaml config --quiet
+      - name: Build the container image
+        run: docker build --tag travel-comparator:ci .
+      - name: Compile Bicep templates
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az bicep install
+            az bicep build --file deploy/bicep/foundation.bicep --stdout > /dev/null
+            az bicep build --file deploy/bicep/main.bicep --stdout > /dev/null
