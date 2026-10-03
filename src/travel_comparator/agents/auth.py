@@ -52,7 +52,10 @@ def worker_auth_dependency(settings: Settings, audience: str):
             )
             if settings.trusted_coordinator_object_id != claims.get("oid"):
                 raise ValueError("Untrusted coordinator identity.")
-            if "invoke" not in claims.get("roles", []):
+            roles = claims.get("roles")
+            if not isinstance(roles, list) or any(not isinstance(role, str) for role in roles):
+                raise ValueError("Invalid roles claim.")
+            if "invoke" not in roles:
                 raise ValueError("Missing invoke role.")
             return claims
         except Exception as exc:

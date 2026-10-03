@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -21,7 +21,7 @@ class WeatherProvider:
         self._user_agent = user_agent
         self._cities = {item["name"].casefold(): item for item in data["cities"]}
 
-    async def assess(self, destination: str) -> dict[str, Any]:
+    async def assess(self, destination: str, departure_date: date | None = None) -> dict[str, Any]:
         city = self._cities.get(destination.casefold())
         if city is None:
             raise ValueError("Unsupported destination.")
@@ -43,15 +43,13 @@ class WeatherProvider:
             forecast = await self._get(client, forecast_url)
             alerts = await self._get(client, f"{NWS_ROOT}/alerts/active/area/{city['state']}")
         periods = forecast.get("properties", {}).get("periods", [])
-        high_f = next(
-            (period.get("temperature") for period in periods if period.get("isDaytime")),
-            None,
-        )
-        if not periods or high_f is None:
+        forecast_period = self._forecast_period(periods, departure_date)
+        high_f = forecast_period.get("temperature") if forecast_period else None
+        if forecast_period is None or high_f is None:
             return {
                 "status": WeatherStatus.UNAVAILABLE.value,
                 "high_celsius": None,
-                "summary": "NWS returned no usable forecast.",
+                "summary": "NWS returned no forecast for the requested date.",
                 "active_alerts": [],
                 "source": "National Weather Service",
                 "observed_at": datetime.now(UTC).isoformat(),
@@ -60,6 +58,7 @@ class WeatherProvider:
         active = [
             feature.get("properties", {}).get("headline", "Active alert")[:160]
             for feature in alerts.get("features", [])[:10]
+            if self._alert_applies(feature, departure_date, forecast_period)
         ]
         severe = any(
             token in title.casefold()
@@ -76,9 +75,7 @@ class WeatherProvider:
         return {
             "status": status.value,
             "high_celsius": round((high_f - 32) * 5 / 9, 1) if high_f is not None else None,
-            "summary": periods[0].get("shortForecast", "Forecast unavailable")[:300]
-            if periods
-            else "Forecast unavailable",
+            "summary": forecast_period.get("shortForecast", "Forecast unavailable")[:300],
             "active_alerts": active,
             "source": "National Weather Service",
             "observed_at": datetime.now(UTC).isoformat(),
@@ -105,6 +102,39 @@ class WeatherProvider:
         parsed = urlparse(url or "")
         if parsed.scheme != "https" or parsed.hostname != "api.weather.gov" or parsed.port:
             raise ValueError("NWS returned an unapproved URL.")
+
+    @staticmethod
+    def _forecast_period(periods: list, departure_date: date | None) -> dict[str, Any] | None:
+        for period in periods:
+            if not isinstance(period, dict) or not period.get("isDaytime"):
+                continue
+            start_time = period.get("startTime")
+            if not isinstance(start_time, str):
+                continue
+            try:
+                period_date = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date()
+            except ValueError:
+                continue
+            if departure_date is None or period_date == departure_date:
+                return period
+        return None
+
+    @staticmethod
+    def _alert_applies(
+        feature: dict[str, Any], departure_date: date | None, forecast_period: dict[str, Any]
+    ) -> bool:
+        if departure_date is None:
+            return True
+        properties = feature.get("properties", {})
+        effective = properties.get("effective")
+        expires = properties.get("expires")
+        if not effective or not expires:
+            return True
+        period_start = datetime.fromisoformat(forecast_period["startTime"].replace("Z", "+00:00"))
+        period_end = datetime.fromisoformat(forecast_period["endTime"].replace("Z", "+00:00"))
+        alert_start = datetime.fromisoformat(effective.replace("Z", "+00:00"))
+        alert_end = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        return alert_start <= period_end and alert_end >= period_start
 
     @staticmethod
     def _stub_observation(city: dict[str, Any]) -> dict[str, Any]:

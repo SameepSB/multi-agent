@@ -35,23 +35,34 @@ logger = logging.getLogger("travel_comparator.api")
 
 
 class RequestLimit:
-    def __init__(self, maximum: int = 60, window_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        maximum: int = 60,
+        window_seconds: int = 60,
+        max_principals: int = 10_000,
+    ) -> None:
         self.maximum = maximum
         self.window_seconds = window_seconds
+        self.max_principals = max_principals
         self._requests: dict[str, deque[float]] = {}
 
     def allowed(self, key: str) -> bool:
         now = time.monotonic()
-        values = self._requests.setdefault(key, deque())
+        values = self._requests.get(key)
+        if values is None:
+            if len(self._requests) >= self.max_principals:
+                for client, requests in list(self._requests.items()):
+                    if not requests or requests[-1] <= now - self.window_seconds:
+                        self._requests.pop(client, None)
+                if len(self._requests) >= self.max_principals:
+                    return False
+            values = deque()
+            self._requests[key] = values
         while values and values[0] <= now - self.window_seconds:
             values.popleft()
         if len(values) >= self.maximum:
             return False
         values.append(now)
-        if len(self._requests) > 10_000:
-            for client, requests in list(self._requests.items()):
-                if not requests or requests[-1] <= now - self.window_seconds:
-                    self._requests.pop(client, None)
         return True
 
 

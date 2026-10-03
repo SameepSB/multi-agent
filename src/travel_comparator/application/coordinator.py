@@ -61,7 +61,10 @@ class Coordinator:
         self._reject_payment(request)
         deadline = self._clock() + self._timeout
         weather_jobs = [
-            self._capture(self._agents.weather(city, correlation_id, deadline), "weather")
+            self._capture(
+                self._agents.weather(city, correlation_id, deadline, request.departure_date),
+                "weather",
+            )
             for city in request.destinations
         ]
         travel_job = self._capture(
@@ -192,7 +195,12 @@ class Coordinator:
             follow_up_findings=follow_up_findings,
             recommendation=recommendation,
             narrative=narrative,
-            limitations=LIMITATIONS.copy(),
+            limitations=LIMITATIONS
+            + (
+                ["The supplied budget is not used to filter or rank destinations."]
+                if request.budget is not None
+                else []
+            ),
         )
 
     @staticmethod
@@ -251,17 +259,20 @@ class Coordinator:
             )
         winner = min(candidates, key=lambda city: city.travel.total.amount_minor)
         warning = None
+        warning_parts = []
         if not go:
-            warning = (
+            warning_parts.append(
                 "No destination has GO weather; this lowest-cost CAUTION option carries "
                 "weather risk."
             )
-        else:
-            warning = (
-                f"{winner.destination} weather status is CAUTION."
-                if winner.weather.status == WeatherStatus.CAUTION
-                else None
+        elif winner.weather.status == WeatherStatus.CAUTION:
+            warning_parts.append(f"{winner.destination} weather status is CAUTION.")
+        if winner.travel.event_severity == "severe":
+            warning_parts.append(
+                f"{winner.destination} overlaps the severe event {winner.travel.event}."
             )
+        if warning_parts:
+            warning = " ".join(warning_parts)
         return Recommendation(
             winner=winner.destination,
             reason=(

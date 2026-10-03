@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 from travel_comparator.config import Settings
@@ -37,7 +38,13 @@ async def serve() -> None:
                             ),
                             "inputSchema": {
                                 "type": "object",
-                                "properties": {"destination": {"type": "string"}},
+                                "properties": {
+                                    "destination": {"type": "string"},
+                                    "departure_date": {
+                                        "type": ["string", "null"],
+                                        "format": "date",
+                                    },
+                                },
                                 "required": ["destination"],
                                 "additionalProperties": False,
                             },
@@ -49,13 +56,25 @@ async def serve() -> None:
                 if params.get("name") != "get_weather_assessment":
                     raise ValueError("Tool is not allow-listed.")
                 arguments = params.get("arguments", {})
-                if set(arguments) != {"destination"}:
+                if (
+                    not isinstance(arguments, dict)
+                    or not {"destination"}.issubset(arguments)
+                    or set(arguments) - {"destination", "departure_date"}
+                ):
                     raise ValueError("Invalid tool arguments.")
+                raw_departure_date = arguments["departure_date"]
+                if raw_departure_date is not None and not isinstance(raw_departure_date, str):
+                    raise ValueError("Invalid departure date.")
+                departure_date = (
+                    date.fromisoformat(raw_departure_date) if raw_departure_date else None
+                )
                 result = {
                     "content": [
                         {
                             "type": "text",
-                            "text": json.dumps(await provider.assess(arguments["destination"])),
+                            "text": json.dumps(
+                                await provider.assess(arguments["destination"], departure_date)
+                            ),
                         }
                     ],
                     "isError": False,

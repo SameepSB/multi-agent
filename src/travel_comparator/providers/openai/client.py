@@ -45,6 +45,8 @@ class OpenAIAdapter:
                 },
             ],
         )
+        if not response.choices:
+            raise ValueError("Query could not be parsed.")
         content = response.choices[0].message.content
         if not content:
             raise ValueError("Query could not be parsed.")
@@ -94,12 +96,16 @@ class OpenAIAdapter:
         await self._client.close()
 
 
-def parse_local_query(query: str, known_destinations: list[str]) -> tuple[str, list[str]]:
+def parse_local_query(
+    query: str, known_destinations: list[str], max_cities: int = 4
+) -> tuple[str, list[str]]:
     """Small, credential-free parser for local smoke use and failure-safe CLI behavior."""
+    if len(query) > 2000 or contains_payment_data(query):
+        raise ValueError("Query rejected by input safety policy.")
     lowered = query.casefold()
     destinations = [city for city in known_destinations if city.casefold() in lowered]
-    if not 2 <= len(destinations) <= 4:
-        raise ValueError("Include two to four supported destination city names.")
+    if not 2 <= len(destinations) <= max_cities:
+        raise ValueError(f"Include two to {max_cities} supported destination city names.")
     match = re.search(
         r"\bfrom\s+([A-Za-z][A-Za-z .'-]{1,60}?)(?:\s+for\b|\s+next\b|[,?.!]|$)", query, re.I
     )

@@ -53,11 +53,20 @@ def create_worker_app(
                         ).model_dump(mode="json"),
                     )
             payload = json.loads(raw_body)
+            if not isinstance(payload, dict):
+                raise ValueError("A2A request must be an object.")
             request_id = payload.get("id")
             if payload.get("jsonrpc") != "2.0" or payload.get("method") != "message/send":
                 raise ValueError("Unsupported A2A request.")
-            message = payload.get("params", {}).get("message", {})
-            parts = message.get("parts", [])
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                raise ValueError("A2A params must be an object.")
+            message = params.get("message")
+            if not isinstance(message, dict):
+                raise ValueError("A2A message must be an object.")
+            parts = message.get("parts")
+            if not isinstance(parts, list) or any(not isinstance(part, dict) for part in parts):
+                raise ValueError("A2A message parts must be objects.")
             task_data = next(
                 (part.get("data") for part in parts if part.get("mediaType") == "application/json"),
                 None,

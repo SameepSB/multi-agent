@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from travel_comparator.contracts.v1 import A2ATaskRequest, Money, TripRequest
 class TravelAdvisor:
     def __init__(self, data_path: str) -> None:
         data = json.loads(Path(data_path).read_text(encoding="utf-8"))
+        self._source = f"{data['data_owner']} synthetic reference data v{data['data_version']}"
         self._cities = {item["name"].casefold(): item for item in data["cities"]}
         self._origins = {origin.casefold(): origin for origin in data["origins"]}
         self._origins.update({"nyc": "New York", "la": "Los Angeles"})
@@ -29,7 +30,7 @@ class TravelAdvisor:
             flight = city["flight_usd"].get(origin)
             if flight is None:
                 raise ValueError("No illustrative estimate is available for this route.")
-            event = self._event_for(city, request.departure_date)
+            event = self._event_for(city, request.departure_date, request.duration_days)
             hotel_multiplier = 1.0
             if request.departure_date and request.departure_date.month == 3:
                 if destination == "Miami":
@@ -53,7 +54,7 @@ class TravelAdvisor:
                 "travel_time_hours": city["travel_time_hours"].get(origin, 0),
                 "event": event["name"] if event else None,
                 "event_severity": event["severity"] if event else "none",
-                "source": "versioned synthetic travel reference data",
+                "source": self._source,
                 "observed_at": datetime.now(UTC).isoformat(),
                 "illustrative": True,
             }
@@ -64,27 +65,37 @@ class TravelAdvisor:
         for constraint in constraints:
             name = constraint.get("destination")
             city = self._cities.get(str(name).casefold())
-            event = self._event_for(city, request.departure_date) if city else None
+            event = (
+                self._event_for(city, request.departure_date, request.duration_days)
+                if city
+                else None
+            )
             details.append(
                 {
                     "destination": name,
                     "weather_status": constraint.get("weather_status"),
                     "event": event["name"] if event else None,
                     "event_severity": event["severity"] if event else "none",
-                    "source": "versioned synthetic travel reference data",
+                    "source": self._source,
                 }
             )
         return {"follow_up": details}
 
     @staticmethod
-    def _event_for(city: dict[str, Any], departure: date | None) -> dict[str, Any] | None:
+    def _event_for(
+        city: dict[str, Any], departure: date | None, duration_days: int
+    ) -> dict[str, Any] | None:
         if departure is None:
             return None
+        trip_dates = (departure + timedelta(days=offset) for offset in range(duration_days))
+        trip_month_days = {(trip_date.month, trip_date.day) for trip_date in trip_dates}
         matches = [
             event
             for event in city["events"]
-            if departure.month in event["months"]
-            and event["start_day"] <= departure.day <= event["end_day"]
+            if any(
+                month in event["months"] and event["start_day"] <= day <= event["end_day"]
+                for month, day in trip_month_days
+            )
         ]
         return max(
             matches,

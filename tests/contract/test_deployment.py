@@ -20,6 +20,19 @@ def test_azure_api_is_external_but_worker_ingress_is_internal():
     assert "allowInsecure: false" in worker
 
 
+def test_azure_container_apps_define_process_commands():
+    root = ROOT / "deploy" / "bicep"
+    main = (root / "main.bicep").read_text(encoding="utf-8")
+    api = (root / "api-app.bicep").read_text(encoding="utf-8")
+    worker = (root / "worker-app.bicep").read_text(encoding="utf-8")
+    assert "command: ['uvicorn']" in api
+    assert "travel_comparator.api.main:create_app" in api
+    assert "param command array" in worker
+    assert "command: command" in worker
+    assert "travel_comparator.agents.weather_server:create_app" in main
+    assert "travel_comparator.agents.travel_server:create_app" in main
+
+
 def test_azure_uses_separate_identities_and_api_only_key_vault_secret():
     main = (ROOT / "deploy" / "bicep" / "main.bicep").read_text(encoding="utf-8")
     api = (ROOT / "deploy" / "bicep" / "api-app.bicep").read_text(encoding="utf-8")

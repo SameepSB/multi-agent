@@ -11,13 +11,15 @@ from pathlib import Path
 from travel_comparator.application.a2a_client import A2AAgentClient
 from travel_comparator.application.coordinator import Coordinator, NoUsableComparison
 from travel_comparator.config import Settings
-from travel_comparator.contracts.v1 import TripRequest
+from travel_comparator.contracts.v1 import TripRequest, contains_payment_data
 from travel_comparator.providers.openai.client import OpenAIAdapter, parse_local_query
 
 
 async def run(args: argparse.Namespace) -> int:
     settings = Settings()
     settings.validate_for("coordinator")
+    if not args.request_json and contains_payment_data(args.query):
+        raise ValueError("Query rejected by input safety policy.")
     data = json.loads(Path(settings.travel_data_path).read_text(encoding="utf-8"))
     client = A2AAgentClient(settings)
     openai = None
@@ -25,7 +27,9 @@ async def run(args: argparse.Namespace) -> int:
         request = TripRequest.model_validate_json(args.request_json)
     elif settings.stub_providers:
         origin, destinations = parse_local_query(
-            args.query, [city["name"] for city in data["cities"]]
+            args.query,
+            [city["name"] for city in data["cities"]],
+            settings.max_cities,
         )
         duration = 5
         duration_match = re.search(r"\b(\d{1,2})\s*[- ]?day", args.query, re.I)
@@ -46,6 +50,8 @@ async def run(args: argparse.Namespace) -> int:
             raise ValueError("OPENAI_API_KEY is required for natural-language query parsing.")
         openai = OpenAIAdapter(settings.openai_api_key.get_secret_value(), settings.openai_model)
         request = await openai.parse_query(args.query, settings.max_cities)
+    if len(request.destinations) > settings.max_cities:
+        raise ValueError("Destination count exceeds configured maximum.")
     coordinator = Coordinator(
         client,
         settings.request_timeout_seconds,

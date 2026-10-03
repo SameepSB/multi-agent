@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,9 @@ class MCPWeatherClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    async def assess(self, destination: str, timeout: float) -> dict[str, Any]:
+    async def assess(
+        self, destination: str, timeout: float, departure_date: date | None = None
+    ) -> dict[str, Any]:
         environment = {
             key: value
             for key, value in os.environ.items()
@@ -84,7 +87,12 @@ class MCPWeatherClient:
                     "tools/call",
                     {
                         "name": "get_weather_assessment",
-                        "arguments": {"destination": destination},
+                        "arguments": {
+                            "destination": destination,
+                            "departure_date": (
+                                departure_date.isoformat() if departure_date is not None else None
+                            ),
+                        },
                     },
                 )
                 data = result["content"][0]["text"]
@@ -107,7 +115,11 @@ def create_service(settings: Settings) -> A2AService:
         destination = task.payload.get("destination")
         if not isinstance(destination, str) or len(destination) > 80:
             raise ValueError("Invalid destination.")
-        return await client.assess(destination, task.deadline_seconds)
+        raw_departure_date = task.payload.get("departure_date")
+        if raw_departure_date is not None and not isinstance(raw_departure_date, str):
+            raise ValueError("Invalid departure date.")
+        departure_date = date.fromisoformat(raw_departure_date) if raw_departure_date else None
+        return await client.assess(destination, task.deadline_seconds, departure_date)
 
     return A2AService(
         name="Travel Comparator Weather Agent",

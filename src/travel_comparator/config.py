@@ -59,7 +59,8 @@ class Settings(BaseSettings):
         if service == "coordinator":
             self._require("WEATHER_AGENT_URL", self.weather_agent_url)
             self._require("TRAVEL_AGENT_URL", self.travel_agent_url)
-            self._require("OPENAI_API_KEY", self.openai_api_key)
+            if not self.stub_providers:
+                self._require("OPENAI_API_KEY", self.openai_api_key)
             self._require("WEATHER_A2A_AUDIENCE", self.weather_a2a_audience)
             self._require("TRAVEL_A2A_AUDIENCE", self.travel_a2a_audience)
             if not self.stub_providers and self.openai_api_key.get_secret_value() == "replace-me":

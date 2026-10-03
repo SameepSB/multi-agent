@@ -10,3 +10,15 @@ def test_live_weather_requires_an_operator_contact_user_agent(settings):
 
     settings.nws_user_agent = "TravelComparator/1.0 (contact: travel-ops@example.com)"
     settings.validate_for("weather")
+
+
+def test_stub_coordinator_does_not_require_openai_key(settings):
+    settings.openai_api_key = None
+    settings.validate_for("coordinator")
+
+
+def test_live_coordinator_requires_openai_key(settings):
+    settings.stub_providers = False
+    settings.openai_api_key = None
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        settings.validate_for("coordinator")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from datetime import date
 from typing import Any
 from urllib.parse import urlparse
 
@@ -32,11 +33,22 @@ class A2AAgentClient(AgentPort):
         self._discovery_locks = {"weather": asyncio.Lock(), "travel": asyncio.Lock()}
         self._managed_identity: ManagedIdentityCredential | None = None
 
-    async def weather(self, destination: str, correlation_id: str, deadline: float) -> dict:
+    async def weather(
+        self,
+        destination: str,
+        correlation_id: str,
+        deadline: float,
+        departure_date: date | None = None,
+    ) -> dict:
         return await self._call(
             "weather",
             "assess_weather",
-            {"destination": destination},
+            {
+                "destination": destination,
+                "departure_date": (
+                    departure_date.isoformat() if departure_date is not None else None
+                ),
+            },
             correlation_id,
             deadline,
             destination,

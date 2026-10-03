@@ -57,6 +57,15 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: appName
           image: containerImage
+          command: ['uvicorn']
+          args: [
+            'travel_comparator.api.main:create_app'
+            '--factory'
+            '--host'
+            '0.0.0.0'
+            '--port'
+            '8080'
+          ]
           env: concat(environmentVariables, [
             {
               name: 'OPENAI_API_KEY'

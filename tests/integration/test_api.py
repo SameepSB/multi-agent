@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from tests.conftest import FakeAgents
+from travel_comparator.api.main import RequestLimit
 
 VALID_REQUEST = {
     "origin": "New York",
@@ -122,3 +123,18 @@ def test_api_idempotency_key_replays_correlation_and_rejects_changed_body(make_c
     assert replay.json() == first.json()
     assert agents.calls == calls_after_first
     assert conflict.status_code == 409
+
+
+def test_rate_limit_bounds_distinct_principal_state(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("travel_comparator.api.main.time.monotonic", lambda: now[0])
+    limiter = RequestLimit(maximum=2, window_seconds=60, max_principals=2)
+
+    assert limiter.allowed("user-1")
+    assert limiter.allowed("user-2")
+    assert not limiter.allowed("user-3")
+    assert len(limiter._requests) == 2
+
+    now[0] = 61.0
+    assert limiter.allowed("user-3")
+    assert len(limiter._requests) == 1

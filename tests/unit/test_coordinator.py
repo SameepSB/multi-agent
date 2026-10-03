@@ -59,14 +59,37 @@ async def test_no_go_destinations_have_no_winner():
     agents = FakeAgents()
     original_weather = agents.weather
 
-    async def no_go(city, correlation, deadline):
-        result = await original_weather(city, correlation, deadline)
+    async def no_go(city, correlation, deadline, departure_date=None):
+        result = await original_weather(city, correlation, deadline, departure_date)
         result["status"] = "NO_GO"
         return result
 
     agents.weather = no_go
     result = await Coordinator(agents).compare(comparison_request())
     assert result.recommendation.winner is None
+
+
+@pytest.mark.asyncio
+async def test_severe_event_on_recommended_city_is_included_in_warning():
+    agents = FakeAgents()
+    request = TripRequest(
+        origin="New York",
+        destinations=["Austin", "San Francisco"],
+        departure_date="2027-03-05",
+        duration_days=5,
+    )
+    result = await Coordinator(agents).compare(request)
+    assert result.recommendation.winner == "San Francisco"
+    assert "severe event" in result.recommendation.warning
+
+
+@pytest.mark.asyncio
+async def test_budget_is_disclosed_as_not_applied():
+    request = comparison_request().model_copy(
+        update={"budget": {"amount_minor": 100_000, "currency": "USD"}}
+    )
+    result = await Coordinator(FakeAgents()).compare(request)
+    assert any("budget is not used" in item for item in result.limitations)
 
 
 @pytest.mark.asyncio

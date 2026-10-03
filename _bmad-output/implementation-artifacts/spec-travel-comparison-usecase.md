@@ -3,12 +3,16 @@ title: 'Travel comparison use case'
 type: 'feature'
 created: '2026-10-03'
 status: 'done'
+review: 'thorough'
+review_source: 'auto'
+lenses_ran:
+  - blind-hunter
+  - edge-case-hunter
+  - verification-gap
+  - intent-alignment
 baseline_commit: 'abf8bcc3cab401d62c472e98feadae06b4bad016'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
 review_loop_iteration: 0
 context:
   - '{project-root}/readme.md'
@@ -74,6 +78,7 @@ context:
 - All application outbound integrations are injectable/stubbable; automated tests do not require Azure, NWS, or OpenAI credentials.
 - Azure role assignments and user-assigned identities are defined in Bicep. Entra app-role creation/assignment, Key Vault RBAC-mode setup, GitHub Environment protection, and live deployment are operator prerequisites.
 - Live NWS mode requires an operator-supplied `NWS_USER_AGENT` identifying the application and a genuine monitored contact; stub mode does not require it.
+- Live weather assessments use the requested departure date's daytime forecast and return `UNAVAILABLE` when the NWS response has no forecast period for that date. Synthetic travel estimates identify their data owner and version; trip-overlap event impacts are included in pricing and recommendation warnings.
 - API throttling and idempotency-response storage are bounded in-process caches, consistent with the no-database boundary. They are not shared/durable across replicas, restarts, or scale-to-zero; use a shared store only if durable, cross-replica quotas or idempotency become a requirement.
 - The API result cache replays completed responses for the same authenticated principal, key, and request bytes. Reusing a key with different request bytes returns 409. A request without a supplied key receives a request-scoped key.
 
@@ -82,6 +87,10 @@ context:
 ## Review Triage Log
 
 - Direct final check found the API route called the coordinator once through the new idempotency result cache and again after it; the redundant call was removed. The regression test now asserts a replay returns the same result without additional agent calls.
+- Thorough review follow-up hardened A2A JSON shape validation and JWT role-claim type checks; bounded rate-limit principal state; enforced configured CLI city limits and card-data rejection; allowed stub-mode startup without an OpenAI key; surfaced data owner/version; fixed overlapping trip-event handling and severe-event warnings; and made Azure Container Apps launch the correct API/worker process.
+- Verification-gap follow-up added focused live-mode NWS classification/date tests and API/worker OIDC role tests. CI now starts Compose, waits for API readiness, and runs the CLI smoke comparison. Compose startup was not executable in this local environment because Docker is unavailable.
+- Intent-alignment follow-up found no missing local application surface; CLI/API share the coordinator, while fare/hotel estimates remain explicitly synthetic and Azure deployment remains an operator-run environment check.
+- Residual: Bicep's image parameter documents digest-only input but does not itself regex-validate digest syntax; the GitHub release workflows enforce a full `sha256:` digest before deployment. Direct deployments that bypass those workflows must provide a validated digest.
 
 ## Design Notes
 
@@ -91,10 +100,10 @@ The CLI accepts natural-language queries through OpenAI; REST accepts the canoni
 
 **Commands:**
 - `uv sync --locked --dev` — passed with Python 3.14.5.
-- `uv run --locked pytest -q` — passed: 28 tests, including a stubbed API → A2A worker → MCP end-to-end journey.
+- `uv run --locked pytest -q` — passed: 50 tests, including a stubbed API → A2A worker → MCP end-to-end journey and focused auth, NWS, event, CLI-input, and limiter regressions.
 - `uv run --locked ruff check src tests` and `uv run --locked ruff format --check src tests` — passed.
 - `uv export --locked --no-emit-project --format requirements-txt --output-file requirements-audit.txt`, followed by `uv run --locked pip-audit --strict --requirement requirements-audit.txt` — passed; the generated audit file was removed.
 - All four Bicep files (`foundation.bicep`, `main.bicep`, `api-app.bicep`, `worker-app.bicep`) compiled successfully with the Bicep build tool. Azure CLI is not installed locally.
 - All three GitHub Actions workflow files parsed as YAML; `git diff --check` passed.
-- `docker compose --env-file .env.example -f deploy/compose.yaml config --quiet` and `docker compose up --build` could not be run because Docker is not installed in this environment. Compose validation and container smoke tests remain to be run in Docker-enabled CI/host.
+- `docker compose --env-file .env.example -f deploy/compose.yaml config --quiet` and `docker compose up --build` could not be run because Docker is not installed in this environment. CI is configured to validate Compose startup/readiness and a CLI comparison, but that workflow was not run in this environment.
 - No Azure resources were deployed. GitHub environment approvals, federated credentials, Entra app roles, Key Vault setup, image promotion, and readiness smoke checks remain operator/deployment verification.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import date
 
 import httpx
 import pytest
@@ -70,10 +71,12 @@ async def test_agent_retries_one_retryable_call_with_same_idempotency_key(settin
         def __init__(self):
             self.calls = 0
             self.keys: list[str | None] = []
+            self.rpc_payloads: list[dict] = []
 
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             self.calls += 1
             self.keys.append(request.headers.get("Idempotency-Key"))
+            self.rpc_payloads.append(json.loads(request.content))
             if self.calls == 1:
                 return httpx.Response(503, request=request)
             rpc_id = json.loads(request.content)["id"]
@@ -104,7 +107,14 @@ async def test_agent_retries_one_retryable_call_with_same_idempotency_key(settin
         "protocolVersion": "1.0.0",
         "skills": [{"id": "assess_weather"}],
     }
-    result = await client.weather("Denver", "correlation-1", time.monotonic() + 2)
+    result = await client.weather(
+        "Denver",
+        "correlation-1",
+        time.monotonic() + 2,
+        departure_date=date(2027, 3, 5),
+    )
     assert result == {"status": "GO"}
     assert transport.calls == 2
     assert transport.keys[0] == transport.keys[1]
+    data_part = transport.rpc_payloads[0]["params"]["message"]["parts"][0]["data"]
+    assert data_part["payload"]["departure_date"] == "2027-03-05"

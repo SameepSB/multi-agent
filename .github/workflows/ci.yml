@@ -39,6 +39,29 @@ jobs:
         run: docker compose --env-file .env.example -f deploy/compose.yaml config --quiet
       - name: Build the container image
         run: docker build --tag travel-comparator:ci .
+      - name: Start the Compose stack
+        run: docker compose --env-file .env.example -f deploy/compose.yaml up -d --build
+      - name: Smoke-test API readiness and CLI
+        run: |
+          ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 \
+              http://127.0.0.1:8080/health/ready; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker compose --env-file .env.example -f deploy/compose.yaml logs
+            exit 1
+          fi
+          docker compose --env-file .env.example -f deploy/compose.yaml exec -T api \
+            travel-comparator \
+            "Compare Austin, Miami, and Denver for a 5-day trip from New York"
+      - name: Stop the Compose stack
+        if: always()
+        run: docker compose --env-file .env.example -f deploy/compose.yaml down --remove-orphans
       - name: Compile Bicep templates
         uses: azure/cli@v2
         with:

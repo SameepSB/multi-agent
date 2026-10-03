@@ -178,6 +178,15 @@ module weatherApp 'worker-app.bicep' = {
     registryServer: registry.properties.loginServer
     identityResourceId: weatherIdentity.id
     targetPort: 5001
+    command: ['uvicorn']
+    args: [
+      'travel_comparator.agents.weather_server:create_app'
+      '--factory'
+      '--host'
+      '0.0.0.0'
+      '--port'
+      '5001'
+    ]
     environmentVariables: concat(workerBaseEnvironment, [
       {
         name: 'WEATHER_A2A_AUDIENCE'
@@ -209,6 +218,15 @@ module travelApp 'worker-app.bicep' = {
     registryServer: registry.properties.loginServer
     identityResourceId: travelIdentity.id
     targetPort: 5003
+    command: ['uvicorn']
+    args: [
+      'travel_comparator.agents.travel_server:create_app'
+      '--factory'
+      '--host'
+      '0.0.0.0'
+      '--port'
+      '5003'
+    ]
     environmentVariables: concat(workerBaseEnvironment, [
       {
         name: 'WEATHER_A2A_AUDIENCE'

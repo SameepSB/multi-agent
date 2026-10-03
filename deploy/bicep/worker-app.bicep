@@ -16,6 +16,10 @@ param identityResourceId string
 @description('Container port.')
 param targetPort int
 
+@description('Executable and arguments for the worker process.')
+param command array
+param args array
+
 @description('Non-secret runtime environment values.')
 param environmentVariables array
 
@@ -50,6 +54,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: appName
           image: containerImage
+          command: command
+          args: args
           env: environmentVariables
           resources: {
             cpu: json('0.5')

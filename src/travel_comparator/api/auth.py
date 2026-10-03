@@ -40,7 +40,10 @@ def api_auth_dependency(settings: Settings):
                 options={"require": ["exp", "iat", "iss", "aud"]},
                 leeway=30,
             )
-            if "TravelComparator.User" not in claims.get("roles", []):
+            roles = claims.get("roles")
+            if not isinstance(roles, list) or any(not isinstance(role, str) for role in roles):
+                raise ValueError("Invalid roles claim.")
+            if "TravelComparator.User" not in roles:
                 raise ValueError("Required application role is absent.")
             return claims
         except Exception as exc:

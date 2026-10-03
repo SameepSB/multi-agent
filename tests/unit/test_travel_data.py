@@ -42,3 +42,18 @@ def test_event_follow_up_is_date_specific_and_severe_event_is_explicit():
     assert quotes["Miami"]["event"] == "Miami Music Week / Ultra"
     assert quotes["Miami"]["event_severity"] == "severe"
     assert quotes["Austin"]["event"] is None
+
+
+def test_event_is_applied_when_trip_overlaps_it_after_departure():
+    advisor = TravelAdvisor(str(ROOT / "data" / "travel_data.json"))
+    quote = advisor.compare(
+        TripRequest(
+            origin="New York",
+            destinations=["Austin", "Miami"],
+            departure_date=date(2027, 3, 5),
+            duration_days=5,
+        )
+    )["quotes"]["Austin"]
+    assert quote["event"] == "SXSW"
+    assert quote["event_severity"] == "severe"
+    assert quote["source"] == "Travel Advisor synthetic reference data v1.0.0"

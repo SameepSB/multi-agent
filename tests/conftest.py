@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,13 @@ class FakeAgents:
         async with self._lock:
             self.active -= 1
 
-    async def weather(self, destination: str, correlation_id: str, deadline: float) -> dict:
+    async def weather(
+        self,
+        destination: str,
+        correlation_id: str,
+        deadline: float,
+        departure_date: date | None = None,
+    ) -> dict:
         await self._enter()
         try:
             await asyncio.sleep(0.005)
