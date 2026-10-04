@@ -1,7 +1,7 @@
 # Travel Comparator — Architecture
 
 **Document type:** Target architecture and implementation contract
-**Status:** Architecture defined; a local runnable implementation and ACA/Bicep deployment pipeline are present. A live Azure deployment has not been performed.
+**Status:** Architecture defined; a local runnable implementation and ACA/Terraform deployment pipeline are present. A live Azure deployment has not been performed.
 **Last updated:** 2026-10-03
 
 This document records the implementation contract and how to operate the Travel Comparator as a cost-conscious MVP. Local application controls and Azure deployment templates are implemented, but local Docker smoke tests and live Azure rollout have not been performed. The document also records the boundaries to preserve if payment capabilities are introduced later; the system is not PCI DSS compliant.
@@ -50,7 +50,7 @@ The local token must match `LOCAL_API_TOKEN` in `.env`. `GET /health/live` and `
 
 ### Azure deployment
 
-The Bicep templates and GitHub Actions workflows are in `deploy/bicep/` and `.github/workflows/`. CI tests, lints, audits dependencies, validates Compose, starts the Compose stack for an API-readiness/CLI smoke test, and compiles Bicep. The development workflow builds/scans an image, publishes an SBOM, pushes to ACR, resolves the pushed digest, and deploys by digest. Production promotion verifies the successful development run's artifact, rescans and deploys the same image digest only after the `production` GitHub Environment's configured approval gates.
+The Terraform configuration and GitHub Actions workflows are in `deploy/terraform/` and `.github/workflows/`. CI tests, lints, audits dependencies, validates Compose, starts the Compose stack for an API-readiness/CLI smoke test, and validates Terraform. The development workflow builds/scans an image, publishes an SBOM, pushes to ACR, resolves the pushed digest, and deploys by digest. Production promotion verifies the successful development run's artifact, rescans and deploys the same image digest only after the `production` GitHub Environment's configured approval gates.
 
 Configure protected `development` and `production` GitHub Environments and their environment variables before enabling deployment. Required variables are `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `NAME_PREFIX`, `ACR_NAME`, `ACA_ENVIRONMENT_NAME`, `KEY_VAULT_NAME`, `OPENAI_SECRET_URI`, `OIDC_ISSUER`, `OIDC_JWKS_URL`, `NWS_USER_AGENT`, `USER_API_AUDIENCE`, `WEATHER_A2A_AUDIENCE`, and `TRAVEL_A2A_AUDIENCE`. Use a lowercase alphanumeric/hyphen `NAME_PREFIX` (3–10 characters, starts with a letter, ends alphanumeric) and globally unique lowercase alphanumeric ACR name (5–50 characters). The ACR and Key Vault must be in the deployment resource group. Configure Azure federated credentials for the GitHub repository/environment subjects and grant the deployment principal only the resource-group permissions needed to provision the foundation, role assignments, and Container Apps.
 
@@ -148,7 +148,7 @@ src/travel_comparator/
 data/travel_data.json   # illustrative, versioned travel estimates
 tests/                  # unit, contract, integration, end-to-end, and deployment checks
 deploy/compose.yaml     # loopback API and private local workers
-deploy/bicep/           # ACA, ACR, identity, and Key Vault role assignments
+deploy/terraform/       # ACA, ACR, Key Vault, identities, and role assignments
 .github/workflows/      # CI, development deploy, production promotion
 ```
 
@@ -187,7 +187,7 @@ Live integration tests must be separately selected and must not be a prerequisit
 
 - **Identity and access:** Require the `TravelComparator.User` Entra ID application role for cloud callers, assigned explicitly; deny anonymous access and self-registration. Each Container App uses a distinct managed identity; A2A workers validate issuer, audience, expiry, and the `invoke` role and authorize only the coordinator identity.
 - **Local trust:** Run the direct CLI as the developer's signed-in OS user. Bind the API to loopback in laptop mode; Compose workers require a distinct local-only coordinator credential. Never reuse local credentials in Azure, include secret files in images, or pass provider credentials to the MCP child process.
-- **Ingress:** Only the coordinator/API app may have external ingress. Worker apps use internal ingress and must not be targets of environment-level HTTP routes, gateways, or alternate public endpoints. Bicep source checks and deployment smoke steps verify the configured ingress flags; an external reachability test remains an Azure rollout prerequisite.
+- **Ingress:** Only the coordinator/API app may have external ingress. Worker apps use internal ingress and must not be targets of environment-level HTTP routes, gateways, or alternate public endpoints. Terraform source checks and deployment smoke steps verify the configured ingress flags; an external reachability test remains an Azure rollout prerequisite.
 - **Secrets:** `.env`/local secret files are ignored by Git and created from examples with placeholders only. Store the OpenAI credential in Key Vault; only the coordinator identity may read it. Use managed identity, rotate provider credentials, and never put secrets in prompts, A2A payloads, logs, image layers, or MCP subprocess environments.
 - **Input and agent safety:** Bound request sizes, validate city/date values and schemas, reject unsupported tool requests, and treat prompt instructions and agent output as untrusted data. Worker URLs are configured by deployment rather than user text; network-level egress allowlisting and private/link-local/metadata address blocking remain pre-production work.
 - **Provider data minimization:** Send OpenAI only the normalized trip fields needed to generate the recommendation. Do not send secrets, payment data, or unnecessary personal data to OpenAI or other third parties. Do not log full prompts or responses; confirm provider retention, training, and data-processing terms before production.
@@ -252,19 +252,19 @@ flowchart TB
 | Coordinator/API app | Only app with external ingress. Require OIDC authentication and the `TravelComparator.User` role; enforce request-size and rate limits at the API boundary. |
 | Weather and Travel Advisor apps | Internal ingress only; never route them through an environment-level public HTTP route. Validate A2A access tokens and allow only the coordinator's managed identity with the `invoke` role. |
 | Container registry | Store scanned images; deploy by immutable digest, not mutable `latest` tags. |
-| Secrets | Store the OpenAI credential in Key Vault; grant read access only to the coordinator managed identity. Never bake secrets into images or Bicep parameters. |
+| Secrets | Store the OpenAI credential in Key Vault; grant read access only to the coordinator managed identity. Never bake secrets into images or Terraform variables. |
 | Telemetry | Send structured logs, metrics, and traces to Azure Monitor/Log Analytics. Apply retention and access controls; redact sensitive values before export. |
 | Network egress | Allow only configured HTTPS destinations: coordinator to OpenAI, Weather Agent to NWS, and Travel Advisor to none. Review provider domains and implement network-level egress enforcement before production. |
 | Configuration | Keep non-secret configuration separate from secrets. Use distinct development and production identities, secrets, and data. |
 
-The Bicep templates set scale-to-zero with a maximum of three replicas for each app. Before production, decide latency/availability objectives and set a minimum replica if the cold-start behavior conflicts with them. The per-instance API idempotency/rate-limit caches are bounded and reset when replicas stop; a shared store would be required if global/durable semantics become necessary. Add budgets/alerts and model-token caps before exposing the API; do not assume scaling limits alone cap provider charges.
+The Terraform config sets scale-to-zero with a maximum of three replicas for each app. Before production, decide latency/availability objectives and set a minimum replica if the cold-start behavior conflicts with them. The per-instance API idempotency/rate-limit caches are bounded and reset when replicas stop; a shared store would be required if global/durable semantics become necessary. Add budgets/alerts and model-token caps before exposing the API; do not assume scaling limits alone cap provider charges.
 
 ### Build, deploy, and rollback
 
 1. Pull requests run formatting/linting, unit and contract tests, authentication-negative tests, secret/dependency checks, infrastructure validation, and a check that no worker route is public.
 2. A protected main-branch workflow builds each container once, scans it, produces an SBOM, and pushes a content-addressed image to ACR.
 3. GitHub Actions authenticates to Azure using workload identity federation/OIDC; no long-lived cloud deployment secret is stored in repository settings.
-4. Bicep provisions the ACA environment and supporting resources. Deploy the exact image digest to a development environment and run smoke/health checks.
+4. Terraform provisions the ACA environment and supporting resources. Deploy the exact image digest to a development environment and run smoke/health checks.
 5. Promote the same digest to production only after explicit approval and environment-specific checks. Require passing authentication/authorization tests before external ingress is enabled. Use ACA revisions/traffic shifting for controlled rollout and rollback to a known-good revision.
 6. Restrict production deployment permissions; audit deployment identity and configuration changes. Validate that only the coordinator has external ingress and that no environment-level route can target a worker.
 
@@ -279,7 +279,7 @@ Each result should identify its source and relevant freshness/time window. Keep 
 ## 9. Delivery sequence and open decisions
 
 1. **Implemented:** Python application, locked dependencies, canonical schemas, coordinator, workers, API/CLI, and deterministic unit/contract/integration tests.
-2. **Implemented:** Docker image, Compose topology, Bicep infrastructure, and CI/development/production digest-based workflow definitions.
+2. **Implemented:** Docker image, Compose topology, Terraform infrastructure, and CI/development/production digest-based workflow definitions.
 3. **Still required:** Run local Compose build/start/readiness smoke tests on a Docker-enabled host.
 4. **Still required:** Provision Entra app roles/assignments, GitHub OIDC federations/environments, Key Vault, network egress controls, and deploy/test Azure development; then approve production promotion.
 5. **Before production:** Measure real latency/cost; set SLOs, global quotas, token budgets, replica/retention bounds, alerting, and network-egress policies.

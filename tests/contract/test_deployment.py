@@ -11,39 +11,35 @@ def test_compose_exposes_only_loopback_api():
     assert 'expose: ["5003"]' in compose
 
 
+def _terraform(name: str) -> str:
+    return (ROOT / "deploy" / "terraform" / name).read_text(encoding="utf-8")
+
+
 def test_azure_api_is_external_but_worker_ingress_is_internal():
-    api = (ROOT / "deploy" / "bicep" / "api-app.bicep").read_text(encoding="utf-8")
-    worker = (ROOT / "deploy" / "bicep" / "worker-app.bicep").read_text(encoding="utf-8")
-    assert "external: true" in api
-    assert "external: false" in worker
-    assert "allowInsecure: false" in api
-    assert "allowInsecure: false" in worker
+    apps = _terraform("apps.tf")
+    assert apps.count("external_enabled           = true") == 1
+    assert apps.count("external_enabled           = false") == 1
+    assert apps.count("allow_insecure_connections = false") == 2
 
 
 def test_azure_container_apps_define_process_commands():
-    root = ROOT / "deploy" / "bicep"
-    main = (root / "main.bicep").read_text(encoding="utf-8")
-    api = (root / "api-app.bicep").read_text(encoding="utf-8")
-    worker = (root / "worker-app.bicep").read_text(encoding="utf-8")
-    assert "command: ['uvicorn']" in api
-    assert "travel_comparator.api.main:create_app" in api
-    assert "param command array" in worker
-    assert "command: command" in worker
-    assert "travel_comparator.agents.weather_server:create_app" in main
-    assert "travel_comparator.agents.travel_server:create_app" in main
+    apps = _terraform("apps.tf")
+    assert apps.count('command = ["uvicorn"]') == 2
+    assert "travel_comparator.api.main:create_app" in apps
+    assert "travel_comparator.agents.${each.value.module}:create_app" in apps
+    assert 'module = "weather_server"' in apps
+    assert 'module = "travel_server"' in apps
 
 
 def test_azure_uses_separate_identities_and_api_only_key_vault_secret():
-    main = (ROOT / "deploy" / "bicep" / "main.bicep").read_text(encoding="utf-8")
-    api = (ROOT / "deploy" / "bicep" / "api-app.bicep").read_text(encoding="utf-8")
-    worker = (ROOT / "deploy" / "bicep" / "worker-app.bicep").read_text(encoding="utf-8")
-    assert "resource apiIdentity" in main
-    assert "resource weatherIdentity" in main
-    assert "resource travelIdentity" in main
-    assert "apiKeyVaultRead" in main
-    assert "secretRef: 'openai-api-key'" in api
-    assert "keyVaultUrl: openAiSecretUri" in api
+    main = _terraform("main.tf")
+    apps = _terraform("apps.tf")
+    for name in ("api", "weather", "travel"):
+        assert f'resource "azurerm_user_assigned_identity" "{name}"' in main
+    assert 'resource "azurerm_role_assignment" "api_key_vault_read"' in main
+    worker = apps[apps.index('"worker"') : apps.index('resource "azurerm_container_app" "api"')]
     assert "openai-api-key" not in worker
+    assert apps.count("openai-api-key") == 2
 
 
 def test_production_promotion_requires_and_reuses_full_digest():

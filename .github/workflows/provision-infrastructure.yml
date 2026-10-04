@@ -1,0 +1,81 @@
+name: Provision infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment (and Azure target) to provision
+        type: choice
+        options: [development, production]
+        default: development
+      store_openai_secret:
+        description: Store the OPENAI_API_KEY environment secret in Key Vault
+        type: boolean
+        default: false
+      deploy_apps:
+        description: Run the development app deployment afterwards
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  actions: write
+
+jobs:
+  provision:
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: travel-comparator-infra-${{ inputs.environment }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ENVIRONMENT_NAME: ${{ inputs.environment }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_name_prefix: ${{ vars.NAME_PREFIX }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.AZURE_RESOURCE_GROUP }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_key_vault_name: ${{ vars.KEY_VAULT_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - name: Provision infrastructure with Terraform
+        run: bash deploy/scripts/terraform-apply.sh
+      - name: Store OpenAI secret
+        if: ${{ inputs.store_openai_secret }}
+        env:
+          KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          test -n "$OPENAI_API_KEY" || { echo "OPENAI_API_KEY environment secret is not set." >&2; exit 1; }
+          # Role assignments can take a few minutes to propagate.
+          for attempt in $(seq 1 12); do
+            if az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name openai-api-key \
+              --value "$OPENAI_API_KEY" --output none; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Could not store the OpenAI secret in Key Vault." >&2
+          exit 1
+      - name: Trigger app deployment
+        if: ${{ inputs.deploy_apps && inputs.environment == 'development' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-development.yml --ref "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"

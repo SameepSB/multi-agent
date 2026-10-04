@@ -10,3 +10,7 @@ htmlcov/
 dist/
 build/
 *.py[cod]
+
+.terraform/
+*.tfstate
+*.tfstate.*

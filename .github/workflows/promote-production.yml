@@ -58,13 +58,10 @@ jobs:
           test "${expected_image##*@}" = "${{ inputs.image_digest }}"
           test "$expected_commit" = "$(jq -r .headSha <<< "$run")"
           echo "Verified promotion record for ${expected_image}."
-      - name: Compile deployment templates
-        uses: azure/cli@v2
+      - uses: hashicorp/setup-terraform@v3
         with:
-          azcliversion: latest
-          inlineScript: |
-            az bicep install
-            az bicep build --file deploy/bicep/main.bicep --stdout > /dev/null
+          terraform_version: 1.16.5
+          terraform_wrapper: false
       - name: Sign in to Azure
         uses: azure/login@v2
         with:
@@ -90,40 +87,33 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-      - name: Deploy production apps
+      - name: Deploy production apps (Terraform)
         env:
-          ACR_NAME: ${{ vars.ACR_NAME }}
-          API_AUDIENCE: ${{ vars.USER_API_AUDIENCE }}
-          ENVIRONMENT_NAME: ${{ vars.ACA_ENVIRONMENT_NAME }}
-          IMAGE_REF: ${{ env.IMAGE_REF }}
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ENVIRONMENT_NAME: production
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
           KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
-          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
-          NWS_USER_AGENT: ${{ vars.NWS_USER_AGENT }}
-          OPENAI_SECRET_URI: ${{ vars.OPENAI_SECRET_URI }}
-          OIDC_ISSUER: ${{ vars.OIDC_ISSUER }}
-          OIDC_JWKS_URL: ${{ vars.OIDC_JWKS_URL }}
-          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          TRAVEL_AUDIENCE: ${{ vars.TRAVEL_A2A_AUDIENCE }}
-          WEATHER_AUDIENCE: ${{ vars.WEATHER_A2A_AUDIENCE }}
+          TF_VAR_name_prefix: ${{ vars.NAME_PREFIX }}
+          TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+          TF_VAR_resource_group_name: ${{ vars.AZURE_RESOURCE_GROUP }}
+          TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+          TF_VAR_key_vault_name: ${{ vars.KEY_VAULT_NAME }}
+          TF_VAR_oidc_issuer: ${{ vars.OIDC_ISSUER }}
+          TF_VAR_oidc_jwks_url: ${{ vars.OIDC_JWKS_URL }}
+          TF_VAR_nws_user_agent: ${{ vars.NWS_USER_AGENT }}
+          TF_VAR_user_api_audience: ${{ vars.USER_API_AUDIENCE }}
+          TF_VAR_weather_a2a_audience: ${{ vars.WEATHER_A2A_AUDIENCE }}
+          TF_VAR_travel_a2a_audience: ${{ vars.TRAVEL_A2A_AUDIENCE }}
         run: |
-          az deployment group create \
-            --name "travel-production-${GITHUB_RUN_ID}" \
-            --resource-group "$RESOURCE_GROUP" \
-            --template-file deploy/bicep/main.bicep \
-            --parameters \
-              namePrefix="$NAME_PREFIX" \
-              containerImage="$IMAGE_REF" \
-              keyVaultName="$KEY_VAULT_NAME" \
-              openAiSecretUri="$OPENAI_SECRET_URI" \
-              oidcIssuer="$OIDC_ISSUER" \
-              oidcJwksUrl="$OIDC_JWKS_URL" \
-              nwsUserAgent="$NWS_USER_AGENT" \
-              userApiAudience="$API_AUDIENCE" \
-              weatherA2AAudience="$WEATHER_AUDIENCE" \
-              travelA2AAudience="$TRAVEL_AUDIENCE" \
-              acrName="$ACR_NAME" \
-              environmentName="$ENVIRONMENT_NAME" \
-            --output none
+          secret_uri="$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name openai-api-key --query id --output tsv)"
+          export TF_VAR_container_image="$IMAGE_REF"
+          export TF_VAR_openai_secret_uri="$secret_uri"
+          bash deploy/scripts/terraform-apply.sh
       - name: Verify ingress and readiness
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}

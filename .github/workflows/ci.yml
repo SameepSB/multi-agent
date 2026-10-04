@@ -62,11 +62,13 @@ jobs:
       - name: Stop the Compose stack
         if: always()
         run: docker compose --env-file .env.example -f deploy/compose.yaml down --remove-orphans
-      - name: Compile Bicep templates
-        uses: azure/cli@v2
+      - uses: hashicorp/setup-terraform@v3
         with:
-          azcliversion: latest
-          inlineScript: |
-            az bicep install
-            az bicep build --file deploy/bicep/foundation.bicep --stdout > /dev/null
-            az bicep build --file deploy/bicep/main.bicep --stdout > /dev/null
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - name: Validate Terraform
+        working-directory: deploy/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
