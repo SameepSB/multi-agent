@@ -48,15 +48,48 @@ The local token must match `LOCAL_API_TOKEN` in `.env`. `GET /health/live` and `
 - Live-mode comparison narrative and natural-language CLI parsing require an OpenAI API key. For local use, keep it only in `.env`; in Azure it is resolved by the API container from the configured Key Vault secret. Do not put credentials in request bodies, source files, or logs.
 - No payment-card data is accepted. The service is not PCI DSS certified or a payment system.
 
-### Azure deployment
+### Azure deployment (Terraform + GitHub Actions CI/CD)
 
-The Terraform configuration and GitHub Actions workflows are in `deploy/terraform/` and `.github/workflows/`. CI tests, lints, audits dependencies, validates Compose, starts the Compose stack for an API-readiness/CLI smoke test, and validates Terraform. The development workflow builds/scans an image, publishes an SBOM, pushes to ACR, resolves the pushed digest, and deploys by digest. Production promotion verifies the successful development run's artifact, rescans and deploys the same image digest only after the `production` GitHub Environment's configured approval gates.
+Infrastructure is Terraform (`deploy/terraform/`); workflows are in `.github/workflows/`. State is stored per environment in an Azure Storage account (`<environment>.tfstate`, Entra auth, no shared keys), bootstrapped automatically by `deploy/scripts/terraform-apply.sh`.
 
-Configure protected `development` and `production` GitHub Environments and their environment variables before enabling deployment. Required variables are `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `NAME_PREFIX`, `ACR_NAME`, `ACA_ENVIRONMENT_NAME`, `KEY_VAULT_NAME`, `OPENAI_SECRET_URI`, `OIDC_ISSUER`, `OIDC_JWKS_URL`, `NWS_USER_AGENT`, `USER_API_AUDIENCE`, `WEATHER_A2A_AUDIENCE`, and `TRAVEL_A2A_AUDIENCE`. Use a lowercase alphanumeric/hyphen `NAME_PREFIX` (3â€“10 characters, starts with a letter, ends alphanumeric) and globally unique lowercase alphanumeric ACR name (5â€“50 characters). The ACR and Key Vault must be in the deployment resource group. Configure Azure federated credentials for the GitHub repository/environment subjects and grant the deployment principal only the resource-group permissions needed to provision the foundation, role assignments, and Container Apps.
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push / PR | Tests, ruff, dependency audit, Compose smoke test, `terraform fmt -check` + `validate`. |
+| `provision-infrastructure.yml` | manual | Terraform creates the resource group, Log Analytics, ACR, Key Vault, Container Apps environment, three managed identities and role assignments. Optionally stores `OPENAI_API_KEY` in Key Vault and triggers the development deploy. |
+| `deploy-development.yml` | push to `main` / manual | Tests, applies infrastructure, builds and scans the image, publishes an SBOM, pushes to ACR, then applies Terraform with the immutable `@sha256` digest to create/update the API and worker apps. Verifies ingress and `/health/ready`, and publishes the promotion record. |
+| `promote-production.yml` | manual, `main` only | Verifies the development run and its digest, rescans the same image, applies Terraform for `production`, verifies ingress and readiness. |
 
-Pre-provision a Key Vault with **RBAC authorization enabled** and a versioned OpenAI secret URI. The deployment creates distinct API, Weather Agent, and Travel Advisor user-assigned identities. Entra app registrations, audiences, the `TravelComparator.User` API role, each worker's `invoke` role, and approved user/group assignments are external prerequisites; grant the coordinator identities `invoke` on both worker APIs. The API identity receives Key Vault Secrets User and ACR pull; workers receive ACR pull only. Allow outbound NWS/OpenAI access as applicable. Set required reviewers/branch restrictions on production in GitHub; the workflow cannot configure those repository controls for you.
+#### One-time configuration
 
-The API rate limit, response idempotency cache, and agent task cache are bounded in-process memory; they are not shared across replicas and are lost on restart/scale-to-zero. After successful development deployment, use the reported digest and development run ID as the `image_digest` and `development_run_id` inputs when manually running **Promote production** on `main`. The workflow checks the run succeeded and verifies its artifact contains that exact digest before promotion. Re-run it with an earlier successful development digest/run ID to roll back. The local Compose smoke test runs in CI; an actual Azure deployment still needs to be run in an Azure-enabled environment.
+1. **Entra app registrations (manual):** create the user-API, Weather and Travel app registrations and their audiences; define the `TravelComparator.User` role and each worker's `invoke` role; assign approved users/groups. After the first infrastructure run, grant the API managed identity (`<NAME_PREFIX>-api-id`) `invoke` on both worker APIs.
+2. **Deployment identity:** create an app registration for GitHub deploys with a federated credential per environment, subject `repo:<owner>/<repo>:environment:development` and `...:environment:production`. Grant it **Contributor** and **User Access Administrator** on the subscription (or the target scope).
+3. **GitHub Environments:** create `development` and `production` (add required reviewers and a `main`-only branch rule on production). In each, add these **variables**:
+
+   | Variable | Meaning |
+   |---|---|
+   | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Deployment identity and subscription |
+   | `AZURE_LOCATION`, `AZURE_RESOURCE_GROUP` | Region and resource group Terraform creates |
+   | `NAME_PREFIX` | 3–10 chars, lowercase, starts with a letter |
+   | `ACR_NAME` | Globally unique, lowercase alphanumeric, 5–50 chars |
+   | `KEY_VAULT_NAME` | Globally unique, 3–24 chars |
+   | `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT` | State location; the storage account name is globally unique, 3–24 lowercase alphanumeric |
+   | `OIDC_ISSUER`, `OIDC_JWKS_URL` | Token issuer and HTTPS JWKS endpoint |
+   | `NWS_USER_AGENT` | App name with an operator contact |
+   | `USER_API_AUDIENCE`, `WEATHER_A2A_AUDIENCE`, `TRAVEL_A2A_AUDIENCE` | Token audiences |
+
+   and this **secret** (development and production): `OPENAI_API_KEY`.
+
+#### Deployment sequence
+
+1. Merge the workflows to `main`, then run **Provision infrastructure** (environment `development`, tick `store_openai_secret`). This creates the Azure resources and writes the OpenAI key to Key Vault as `openai-api-key`.
+2. Complete the manual Entra `invoke` grants for the API identity.
+3. Run **Deploy development** (or tick `deploy_apps` in step 1; it also runs on every push to `main`). Note the digest and run ID in the job summary.
+4. Run **Provision infrastructure** for `production` (with `store_openai_secret`), then run **Promote production** on `main` with the `image_digest` and `development_run_id` inputs. The workflow checks the run succeeded and that its artifact holds that exact digest. Re-run it with an earlier successful digest/run ID to roll back.
+5. Find the API URL in the deploy job (`api_fqdn` Terraform output) and call `https://<fqdn>/api/v1/comparisons` with an Entra bearer token.
+
+The OpenAI key is set with the Azure CLI, not Terraform, so it never enters state. Only the API app has external ingress; workers use internal ingress. The API identity gets Key Vault Secrets User and ACR pull; workers get ACR pull only. Allow outbound NWS/OpenAI access as applicable.
+
+The API rate limit, response idempotency cache, and agent task cache are bounded in-process memory; they are not shared across replicas and are lost on restart/scale-to-zero. The local Compose smoke test runs in CI; an actual Azure deployment has not yet been run.
 
 ## 1. Architecture at a glance
 
