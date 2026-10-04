@@ -4,15 +4,21 @@ import secrets
 from typing import Any
 
 import jwt
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPBearer
 from jwt import PyJWKClient
 
 from travel_comparator.config import Settings
 from travel_comparator.contracts.v1 import ErrorEnvelope
 
+bearer_scheme = HTTPBearer(auto_error=False)
+
 
 def api_auth_dependency(settings: Settings):
-    async def authenticate(request: Request) -> dict[str, Any]:
+    # The scheme only advertises bearer auth to OpenAPI; validation stays below.
+    async def authenticate(
+        request: Request, _credentials: object = Depends(bearer_scheme)
+    ) -> dict[str, Any]:
         correlation_id = request.state.correlation_id
         authorization = request.headers.get("authorization", "")
         if not authorization.startswith("Bearer "):

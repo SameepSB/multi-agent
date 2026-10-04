@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from travel_comparator.api.auth import api_auth_dependency
+from travel_comparator.api.auth import api_auth_dependency, bearer_scheme
 from travel_comparator.application.a2a_client import A2AAgentClient
 from travel_comparator.application.coordinator import (
     Coordinator,
@@ -147,7 +147,9 @@ def create_app(
     request_limit = RequestLimit()
     idempotency = IdempotencyRegistry()
 
-    async def authenticated_user(request: Request) -> dict[str, Any]:
+    async def authenticated_user(
+        request: Request, _credentials: object = Depends(bearer_scheme)
+    ) -> dict[str, Any]:
         claims = await auth(request)
         principal = claims.get("oid") or claims.get("sub")
         if not isinstance(principal, str) or not 1 <= len(principal) <= 200:
