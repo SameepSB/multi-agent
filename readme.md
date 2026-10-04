@@ -41,6 +41,57 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/api/v1/comparisons `
 
 The local token must match `LOCAL_API_TOKEN` in `.env`. `GET /health/live` and `GET /health/ready` are also available. Stop the stack with `docker compose --env-file .env -f deploy/compose.yaml down`.
 
+### Run locally without Docker (multiple terminals)
+
+Prerequisites: Python 3.14 and `uv`. Open three PowerShell terminals in the repository root and run `uv sync --locked --dev` once. Use these `.env` values (127.0.0.1 URLs, tokens at least 24 characters and different from each other):
+
+```
+APP_ENV=local
+STUB_PROVIDERS=true
+LOCAL_API_TOKEN=<random token>
+LOCAL_COORDINATOR_TOKEN=<different random token>
+WEATHER_AGENT_URL=http://127.0.0.1:5001
+TRAVEL_AGENT_URL=http://127.0.0.1:5003
+WEATHER_A2A_AUDIENCE=travel-comparator-weather-local
+TRAVEL_A2A_AUDIENCE=travel-comparator-travel-local
+TRAVEL_DATA_PATH=data/travel_data.json
+```
+
+**Terminal 1: Weather agent**
+
+```powershell
+uv run --locked uvicorn travel_comparator.agents.weather_server:create_app --factory --host 127.0.0.1 --port 5001
+```
+
+**Terminal 2: Travel Advisor agent**
+
+```powershell
+uv run --locked uvicorn travel_comparator.agents.travel_server:create_app --factory --host 127.0.0.1 --port 5003
+```
+
+**Terminal 3: API**
+
+```powershell
+uv run --locked uvicorn travel_comparator.api.main:create_app --factory --host 127.0.0.1 --port 8080
+```
+
+Start the two agents first, then the API. Restart a process after changing `.env`, because settings are read at startup.
+
+**Terminal 4: use it.** Either the CLI:
+
+```powershell
+uv run --locked travel-comparator "Compare Austin, Miami, and Denver for a 5-day trip from New York"
+```
+
+or the REST API:
+
+```powershell
+$token = ((Get-Content .env | Where-Object { $_ -match '^LOCAL_API_TOKEN=' }) -split '=',2)[1].Trim()
+$body = '{"origin":"New York","destinations":["Denver","Austin","Miami"],"duration_days":5}'
+Invoke-RestMethod -Uri http://127.0.0.1:8080/api/v1/comparisons -Method Post -ContentType 'application/json' -Headers @{ Authorization = "Bearer $token" } -Body $body | ConvertTo-Json -Depth 10
+```
+
+Or use the browser: open http://127.0.0.1:8080/docs, click **Authorize**, paste the token, and run `POST /api/v1/comparisons`. A `401 UNAUTHORIZED` usually means `LOCAL_API_TOKEN` is wrong or an old API process is still running on port 8080. Stop each server with Ctrl+C.
 ### Data and provider limits
 
 - Stub mode is deterministic for tests and local demos. With `STUB_PROVIDERS=false`, weather comes from the National Weather Service; outbound access to `api.weather.gov` and a real operator contact in `NWS_USER_AGENT` are required. A requested departure date uses that date's daytime forecast; if it is outside the returned forecast window, weather is reported unavailable rather than substituting today's forecast.
