@@ -48,6 +48,23 @@ The local token must match `LOCAL_API_TOKEN` in `.env`. `GET /health/live` and `
 - Live-mode comparison narrative and natural-language CLI parsing require an OpenAI API key. For local use, keep it only in `.env`; in Azure it is resolved by the API container from the configured Key Vault secret. Do not put credentials in request bodies, source files, or logs.
 - No payment-card data is accepted. The service is not PCI DSS certified or a payment system.
 
+### Deployment options at a glance
+
+| | Local (no Docker) | Docker Compose | Azure Container Apps | Single Linux VM |
+|---|---|---|---|---|
+| **Use for** | Development and testing | Local smoke test, any Docker host | Production-style, managed | Low cost, single host |
+| **Infrastructure** | None; three `uvicorn` processes | Docker only | Terraform: `deploy/terraform/` | Terraform: `deploy/terraform-vm/` |
+| **Run via** | Manual commands | `deploy/compose.yaml` | `provision-infrastructure.yml`, `deploy-development.yml`, `promote-production.yml` | `deploy-vm.yml` |
+| **Authentication** | Static local token | Static local token | Entra OIDC per user, managed-identity A2A | Static bearer token (Key Vault `vm-api-token`) |
+| **Ingress** | `127.0.0.1:8080` | `127.0.0.1:8080` | Only the API is external | Caddy HTTPS on 443; API and workers internal |
+| **Scaling** | None | None | Scale to zero, up to 3 replicas | None (single point of failure) |
+| **Secrets** | `.env` | `.env` | Key Vault, API identity only | Key Vault, VM identity |
+| **Operations** | You | You | Managed | You patch the OS and Docker |
+| **Cost** | Free | Free | Pay per use | Always-on VM |
+
+Shared Azure infrastructure (created by **Provision infrastructure**): resource group, Log Analytics, Azure Container Registry, Key Vault, and a Terraform state storage account. Container Apps adds the environment, three managed identities and three apps (API external, workers internal). The VM path adds a VNet, an NSG allowing only 80/443, a static public IP with a DNS label, and an Ubuntu 24.04 VM running Compose with Caddy.
+
+Data modes are independent of the target: `STUB_PROVIDERS=true` uses deterministic fixtures with no OpenAI/NWS access, and `false` uses live providers. Container Apps always runs live; local and VM deployments choose via `STUB_PROVIDERS`. Choose Container Apps for per-user identity and scaling, the VM for low cost, and local or stub mode for demos.
 ### Azure deployment (Terraform + GitHub Actions CI/CD)
 
 Infrastructure is Terraform (`deploy/terraform/`); workflows are in `.github/workflows/`. State is stored per environment in an Azure Storage account (`<environment>.tfstate`, Entra auth, no shared keys), bootstrapped automatically by `deploy/scripts/terraform-apply.sh`.
@@ -69,10 +86,10 @@ Infrastructure is Terraform (`deploy/terraform/`); workflows are in `.github/wor
    |---|---|
    | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Deployment identity and subscription |
    | `AZURE_LOCATION`, `AZURE_RESOURCE_GROUP` | Region and resource group Terraform creates |
-   | `NAME_PREFIX` | 3–10 chars, lowercase, starts with a letter |
-   | `ACR_NAME` | Globally unique, lowercase alphanumeric, 5–50 chars |
-   | `KEY_VAULT_NAME` | Globally unique, 3–24 chars |
-   | `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT` | State location; the storage account name is globally unique, 3–24 lowercase alphanumeric |
+   | `NAME_PREFIX` | 3ï¿½10 chars, lowercase, starts with a letter |
+   | `ACR_NAME` | Globally unique, lowercase alphanumeric, 5ï¿½50 chars |
+   | `KEY_VAULT_NAME` | Globally unique, 3ï¿½24 chars |
+   | `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT` | State location; the storage account name is globally unique, 3ï¿½24 lowercase alphanumeric |
    | `OIDC_ISSUER`, `OIDC_JWKS_URL` | Token issuer and HTTPS JWKS endpoint |
    | `NWS_USER_AGENT` | App name with an operator contact |
    | `USER_API_AUDIENCE`, `WEATHER_A2A_AUDIENCE`, `TRAVEL_A2A_AUDIENCE` | Token audiences |
@@ -88,6 +105,14 @@ Infrastructure is Terraform (`deploy/terraform/`); workflows are in `.github/wor
 5. Find the API URL in the deploy job (`api_fqdn` Terraform output) and call `https://<fqdn>/api/v1/comparisons` with an Entra bearer token.
 
 The OpenAI key is set with the Azure CLI, not Terraform, so it never enters state. Only the API app has external ingress; workers use internal ingress. The API identity gets Key Vault Secrets User and ACR pull; workers get ACR pull only. Allow outbound NWS/OpenAI access as applicable.
+
+#### Alternative: single Linux VM
+
+For a cheaper, non-autoscaling target, **Deploy to Linux VM** (`deploy-vm.yml`) runs the same image on one Ubuntu VM with Docker Compose. Terraform (`deploy/terraform-vm/`, state key `vm-<environment>.tfstate`) creates the VM, network, NSG (only ports 80/443 open), static public IP with a DNS label, and a managed identity with ACR pull and Key Vault read. Caddy terminates HTTPS (automatic Let's Encrypt certificate) and proxies to the API; the API and workers have no published ports. The VM is managed with `az vm run-command`, so SSH is not exposed.
+
+It reuses the resource group, ACR and Key Vault from **Provision infrastructure**, so run that first. Extra environment variables: `VM_DNS_LABEL` (unique per region; the URL becomes `https://<label>.<region>.cloudapp.azure.com`) and `VM_SSH_PUBLIC_KEY` (contents of a public key from `ssh-keygen`). Then run **Deploy to Linux VM** with the `image_digest` produced by **Deploy development**; tick `stub_providers` to avoid needing live OpenAI/NWS access.
+
+Authentication differs from the Container Apps path: the VM runs in the app's static-token mode (`APP_ENV=local`) rather than Entra/OIDC. Callers use a single bearer token, generated once and stored in Key Vault as `vm-api-token`; the worker token is generated on the VM and never leaves it. Fetch the token with `az keyvault secret show --vault-name <KEY_VAULT_NAME> --name vm-api-token --query value -o tsv`. Treat it as a shared secret and rotate it by deleting the secret and re-running the workflow. Use Container Apps if you need per-user Entra authentication. Rollback is a re-run with an earlier digest.
 
 The API rate limit, response idempotency cache, and agent task cache are bounded in-process memory; they are not shared across replicas and are lost on restart/scale-to-zero. The local Compose smoke test runs in CI; an actual Azure deployment has not yet been run.
 

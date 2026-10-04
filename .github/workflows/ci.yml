@@ -67,8 +67,9 @@ jobs:
           terraform_version: 1.16.5
           terraform_wrapper: false
       - name: Validate Terraform
-        working-directory: deploy/terraform
         run: |
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false
-          terraform validate
+          for dir in deploy/terraform deploy/terraform-vm; do
+            terraform -chdir=$dir fmt -check -recursive
+            terraform -chdir=$dir init -backend=false -input=false
+            terraform -chdir=$dir validate
+          done

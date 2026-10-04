@@ -1,0 +1,142 @@
+name: Deploy to Linux VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment to deploy
+        type: choice
+        options: [development, production]
+        default: development
+      image_digest:
+        description: "sha256 digest of an image already pushed to ACR (from Deploy development)"
+        required: true
+        type: string
+      stub_providers:
+        description: Use deterministic stub data instead of live OpenAI/NWS
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-vm:
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: travel-comparator-vm-${{ inputs.environment }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ENVIRONMENT_NAME: ${{ inputs.environment }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_ROOT_DIR: terraform-vm
+      TFSTATE_KEY: vm-${{ inputs.environment }}.tfstate
+      TF_VAR_name_prefix: ${{ vars.NAME_PREFIX }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.AZURE_RESOURCE_GROUP }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_key_vault_name: ${{ vars.KEY_VAULT_NAME }}
+      TF_VAR_ssh_public_key: ${{ vars.VM_SSH_PUBLIC_KEY }}
+      TF_VAR_dns_label: ${{ vars.VM_DNS_LABEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate inputs
+        env:
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          TARGET: ${{ inputs.environment }}
+        run: |
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "image_digest must be a full sha256 digest." >&2
+            exit 1
+          fi
+          if [ "$TARGET" = "production" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Production VM deployments must run from main." >&2
+            exit 1
+          fi
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - name: Verify image and shared secrets
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          STUB_PROVIDERS: ${{ inputs.stub_providers }}
+        run: |
+          az acr repository show --name "$ACR_NAME" --image "travel-comparator@${IMAGE_DIGEST}" --output none
+          if [ "$STUB_PROVIDERS" != "true" ]; then
+            az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name openai-api-key --output none || {
+              echo "Run Provision infrastructure with store_openai_secret first." >&2
+              exit 1
+            }
+          fi
+          # The API bearer token is generated once and kept only in Key Vault.
+          if ! az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name vm-api-token --output none 2>/dev/null; then
+            token="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 40)"
+            az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name vm-api-token --value "$token" --output none
+          fi
+      - name: Provision VM (Terraform)
+        run: bash deploy/scripts/terraform-apply.sh
+      - name: Release containers on the VM
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          STUB_PROVIDERS: ${{ inputs.stub_providers }}
+          NWS_USER_AGENT: ${{ vars.NWS_USER_AGENT }}
+        run: |
+          tf() { terraform -chdir=deploy/terraform-vm output -raw "$1"; }
+          vm_name="$(tf vm_name)"
+          fqdn="$(tf vm_fqdn)"
+          client_id="$(tf vm_identity_client_id)"
+          registry="$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)"
+          {
+            echo "export IMAGE_REF='${registry}/travel-comparator@${IMAGE_DIGEST}'"
+            echo "export KEY_VAULT_NAME='${KEY_VAULT_NAME}'"
+            echo "export VM_FQDN='${fqdn}'"
+            echo "export VM_CLIENT_ID='${client_id}'"
+            echo "export STUB_PROVIDERS='${STUB_PROVIDERS}'"
+            echo "export NWS_USER_AGENT='${NWS_USER_AGENT}'"
+            echo "export COMPOSE_B64='$(base64 -w0 deploy/vm/compose.yaml)'"
+            cat deploy/scripts/vm-release.sh
+          } > release-run.sh
+          result="$(az vm run-command invoke \
+            --resource-group "$RESOURCE_GROUP" --name "$vm_name" \
+            --command-id RunShellScript --scripts @release-run.sh \
+            --query 'value[].message' --output tsv)"
+          rm -f release-run.sh
+          echo "$result" | tail -n 40
+          echo "$result" | grep -q RELEASE_OK
+          echo "VM_FQDN=${fqdn}" >> "$GITHUB_ENV"
+      - name: Verify HTTPS readiness
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "https://${VM_FQDN}/health/ready"; then
+              echo
+              {
+                echo "VM deployment: \`https://${VM_FQDN}\`"
+                echo "Image: \`${{ inputs.image_digest }}\`"
+                echo "API token: Key Vault secret \`vm-api-token\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "VM API readiness probe failed." >&2
+          exit 1

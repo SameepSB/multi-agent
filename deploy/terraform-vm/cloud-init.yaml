@@ -1,0 +1,22 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
+  - jq
+  - unattended-upgrades
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+runcmd:
+  - systemctl enable --now docker
+  - mkdir -p /etc/apt/keyrings
+  - curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/azure-cli.list
+  - apt-get update
+  - apt-get install -y azure-cli
+  - mkdir -p /opt/travel-comparator
+  - touch /opt/travel-comparator/.cloud-init-done

@@ -50,3 +50,14 @@ def test_production_promotion_requires_and_reuses_full_digest():
     assert "sha256:[0-9a-f]{64}" in workflow
     assert 'image_ref="${registry}/travel-comparator@${IMAGE_DIGEST}"' in workflow
     assert 'docker pull "$image_ref"' in workflow
+
+
+def test_vm_stack_publishes_only_caddy_and_opens_only_web_ports():
+    compose = (ROOT / "deploy" / "vm" / "compose.yaml").read_text(encoding="utf-8")
+    assert compose.count("    ports:") == 1
+    assert '"443:443"' in compose
+    assert 'expose: ["5001"]' in compose
+    assert 'expose: ["5003"]' in compose
+    network = (ROOT / "deploy" / "terraform-vm" / "main.tf").read_text(encoding="utf-8")
+    assert 'destination_port_ranges    = ["80", "443"]' in network
+    assert "22" not in network.split("destination_port_ranges")[1].split("]")[0]

@@ -6,7 +6,7 @@ set -euo pipefail
 : "${ENVIRONMENT_NAME:?}" "${AZURE_LOCATION:?}"
 : "${TFSTATE_RESOURCE_GROUP:?}" "${TFSTATE_STORAGE_ACCOUNT:?}"
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform" && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../${TF_ROOT_DIR:-terraform}" && pwd)"
 container="tfstate"
 
 az group create --name "$TFSTATE_RESOURCE_GROUP" --location "$AZURE_LOCATION" --output none
@@ -50,6 +50,6 @@ terraform init -input=false -reconfigure \
   -backend-config="resource_group_name=${TFSTATE_RESOURCE_GROUP}" \
   -backend-config="storage_account_name=${TFSTATE_STORAGE_ACCOUNT}" \
   -backend-config="container_name=${container}" \
-  -backend-config="key=${ENVIRONMENT_NAME}.tfstate" \
+  -backend-config="key=${TFSTATE_KEY:-${ENVIRONMENT_NAME}.tfstate}" \
   -backend-config="use_azuread_auth=true"
 terraform apply -input=false -auto-approve
