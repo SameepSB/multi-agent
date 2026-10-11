@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     travel_a2a_audience: str | None = None
     trusted_coordinator_object_id: str | None = None
     managed_identity_client_id: str | None = None
+    serpapi_api_key: SecretStr | None = None
     travel_data_path: str = "data/travel_data.json"
     nws_user_agent: str | None = Field(default=None, max_length=256)
     max_request_bytes: int = Field(default=32_768, ge=1024, le=65_536)

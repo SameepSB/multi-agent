@@ -19,6 +19,13 @@ from travel_comparator.places import (
     estimate_hotel_usd,
     estimate_travel_hours,
 )
+from travel_comparator.providers.serpapi import (
+    SOURCE as LIVE_SOURCE,
+)
+from travel_comparator.providers.serpapi import (
+    LiveProviderError,
+    SerpApiTravelProvider,
+)
 
 
 class TravelAdvisor:
@@ -174,6 +181,11 @@ class TravelAdvisor:
 def create_service(settings: Settings) -> A2AService:
     advisor = TravelAdvisor(settings.travel_data_path)
     geocoder = Geocoder()
+    live = (
+        SerpApiTravelProvider(settings.serpapi_api_key.get_secret_value())
+        if settings.serpapi_api_key and not settings.stub_providers
+        else None
+    )
 
     async def handle(task: A2ATaskRequest) -> dict[str, Any]:
         if task.action == "follow_up":
@@ -189,7 +201,32 @@ def create_service(settings: Settings) -> A2AService:
                 places[name] = await geocoder.lookup(name)
             except UnknownPlaceError:
                 continue
-        return advisor.compare(request, places)
+        result = advisor.compare(request, places)
+        if live is not None and request.departure_date is not None:
+            for destination, quote in result["quotes"].items():
+                try:
+                    live_quote = await live.quote(
+                        request.origin,
+                        destination,
+                        request.departure_date,
+                        request.duration_days,
+                    )
+                except LiveProviderError:
+                    continue
+                flight = live_quote.flight_usd_minor
+                hotel = live_quote.hotel_per_night_usd_minor
+                quote.update(
+                    flight=Money(amount_minor=flight).model_dump(mode="json"),
+                    hotel_per_night=Money(amount_minor=hotel).model_dump(mode="json"),
+                    total=Money(amount_minor=flight + hotel * quote["lodging_nights"]).model_dump(
+                        mode="json"
+                    ),
+                    travel_time_hours=live_quote.travel_time_hours,
+                    source=LIVE_SOURCE,
+                    observed_at=live_quote.observed_at,
+                    illustrative=False,
+                )
+        return result
 
     return A2AService(
         name="Travel Comparator Travel Advisor",

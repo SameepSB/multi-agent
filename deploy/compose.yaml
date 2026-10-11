@@ -108,6 +108,7 @@ services:
       WEATHER_A2A_AUDIENCE: travel-comparator-weather-local
       TRAVEL_A2A_AUDIENCE: travel-comparator-travel-local
       TRAVEL_DATA_PATH: /app/data/travel_data.json
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
     expose: ["5003"]
     healthcheck:
       test:
