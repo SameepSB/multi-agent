@@ -8,6 +8,17 @@ from typing import Any
 from travel_comparator.agents.common import A2AService
 from travel_comparator.config import Settings
 from travel_comparator.contracts.v1 import A2ATaskRequest, Money, TripRequest
+from travel_comparator.places import (
+    ESTIMATE_SOURCE,
+    KNOWN_ORIGIN_COORDINATES,
+    Geocoder,
+    Place,
+    UnknownPlaceError,
+    distance_km,
+    estimate_flight_usd,
+    estimate_hotel_usd,
+    estimate_travel_hours,
+)
 
 
 class TravelAdvisor:
@@ -18,19 +29,45 @@ class TravelAdvisor:
         self._origins = {origin.casefold(): origin for origin in data["origins"]}
         self._origins.update({"nyc": "New York", "la": "Los Angeles"})
 
-    def compare(self, request: TripRequest) -> dict[str, Any]:
-        origin = self._origins.get(request.origin.casefold())
-        if origin is None:
-            raise ValueError("Origin is not in the supported illustrative estimate data.")
+    def missing_places(self, request: TripRequest) -> list[str]:
+        """Names that need a geocoding lookup because the curated data cannot price them."""
+        needed: list[str] = []
+        origin_known = request.origin in self._origins.values()
+        if not origin_known:
+            needed.append(request.origin)
+        for destination in request.destinations:
+            city = self._cities.get(destination.casefold())
+            if city is None or not origin_known:
+                needed.append(destination)
+        return needed
+
+    def compare(
+        self, request: TripRequest, places: dict[str, Place] | None = None
+    ) -> dict[str, Any]:
+        places = places or {}
+        origin = self._origins.get(request.origin.casefold(), request.origin)
         quotes = {}
         for destination in request.destinations:
             city = self._cities.get(destination.casefold())
-            if city is None:
-                raise ValueError("Destination is not supported by travel reference data.")
-            flight = city["flight_usd"].get(origin)
-            if flight is None:
-                raise ValueError("No illustrative estimate is available for this route.")
-            event = self._event_for(city, request.departure_date, request.duration_days)
+            curated_flight = city["flight_usd"].get(origin) if city else None
+            if city is not None and curated_flight is not None:
+                flight, hours, hotel_base, source = (
+                    curated_flight,
+                    city["travel_time_hours"].get(origin, 0),
+                    city["hotel_per_night_usd"],
+                    self._source,
+                )
+            else:
+                estimate = self._estimate(origin, destination, city, places)
+                if estimate is None:
+                    continue
+                flight, hours, hotel_base = estimate
+                source = ESTIMATE_SOURCE
+            event = (
+                self._event_for(city, request.departure_date, request.duration_days)
+                if city
+                else None
+            )
             hotel_multiplier = 1.0
             if request.departure_date and request.departure_date.month == 3:
                 if destination == "Miami":
@@ -39,7 +76,7 @@ class TravelAdvisor:
                     hotel_multiplier *= 1.20
             if event:
                 hotel_multiplier *= event["hotel_multiplier"]
-            hotel = round(city["hotel_per_night_usd"] * hotel_multiplier)
+            hotel = round(hotel_base * hotel_multiplier)
             nights = request.duration_days
             flight_minor = int(flight * 100)
             hotel_minor = int(hotel * 100)
@@ -51,14 +88,41 @@ class TravelAdvisor:
                 "total": Money(amount_minor=flight_minor + hotel_minor * nights).model_dump(
                     mode="json"
                 ),
-                "travel_time_hours": city["travel_time_hours"].get(origin, 0),
+                "travel_time_hours": hours,
                 "event": event["name"] if event else None,
                 "event_severity": event["severity"] if event else "none",
-                "source": self._source,
+                "source": source,
                 "observed_at": datetime.now(UTC).isoformat(),
                 "illustrative": True,
             }
         return {"quotes": quotes}
+
+    @staticmethod
+    def _estimate(
+        origin: str,
+        destination: str,
+        city: dict[str, Any] | None,
+        places: dict[str, Place],
+    ) -> tuple[int, float, int] | None:
+        """Distance and country-tier estimate; None when a place could not be resolved."""
+        if origin in KNOWN_ORIGIN_COORDINATES:
+            lat, lon, origin_country = KNOWN_ORIGIN_COORDINATES[origin]
+            origin_point: Place | None = Place(origin, lat, lon, origin_country)
+        else:
+            origin_point = places.get(origin)
+        if city is not None:
+            destination_point: Place | None = Place(
+                destination, city["latitude"], city["longitude"], "US"
+            )
+            hotel = city["hotel_per_night_usd"]
+        else:
+            destination_point = places.get(destination)
+            hotel = estimate_hotel_usd(destination_point.country_code) if destination_point else 0
+        if origin_point is None or destination_point is None:
+            return None
+        km = distance_km(origin_point, destination_point)
+        international = origin_point.country_code != destination_point.country_code
+        return estimate_flight_usd(km, international), estimate_travel_hours(km), hotel
 
     def follow_up(self, request: TripRequest, constraints: list[dict[str, Any]]) -> dict[str, Any]:
         details = []
@@ -109,6 +173,7 @@ class TravelAdvisor:
 
 def create_service(settings: Settings) -> A2AService:
     advisor = TravelAdvisor(settings.travel_data_path)
+    geocoder = Geocoder()
 
     async def handle(task: A2ATaskRequest) -> dict[str, Any]:
         if task.action == "follow_up":
@@ -118,7 +183,13 @@ def create_service(settings: Settings) -> A2AService:
             request = TripRequest.model_validate(task.payload.get("request", {}))
             return advisor.follow_up(request, constraints)
         request = TripRequest.model_validate(task.payload.get("request", {}))
-        return advisor.compare(request)
+        places: dict[str, Place] = {}
+        for name in advisor.missing_places(request):
+            try:
+                places[name] = await geocoder.lookup(name)
+            except UnknownPlaceError:
+                continue
+        return advisor.compare(request, places)
 
     return A2AService(
         name="Travel Comparator Travel Advisor",

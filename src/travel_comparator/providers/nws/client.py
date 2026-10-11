@@ -7,8 +7,33 @@ from urllib.parse import urlparse
 import httpx
 
 from travel_comparator.contracts.v1 import WeatherStatus
+from travel_comparator.places import Geocoder
 
 NWS_ROOT = "https://api.weather.gov"
+OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+WMO_SUMMARIES = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Fog",
+    51: "Light drizzle",
+    53: "Drizzle",
+    55: "Heavy drizzle",
+    61: "Light rain",
+    63: "Rain",
+    65: "Heavy rain",
+    71: "Light snow",
+    73: "Snow",
+    75: "Heavy snow",
+    80: "Rain showers",
+    81: "Rain showers",
+    82: "Violent rain showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with hail",
+    99: "Thunderstorm with heavy hail",
+}
 
 
 class RetryableNwsError(RuntimeError):
@@ -20,11 +45,12 @@ class WeatherProvider:
         self._stub = stub
         self._user_agent = user_agent
         self._cities = {item["name"].casefold(): item for item in data["cities"]}
+        self._geocoder = Geocoder()
 
     async def assess(self, destination: str, departure_date: date | None = None) -> dict[str, Any]:
         city = self._cities.get(destination.casefold())
         if city is None:
-            raise ValueError("Unsupported destination.")
+            return await self._assess_any_city(destination, departure_date)
         if self._stub:
             return self._stub_observation(city)
         if not self._user_agent:
@@ -80,6 +106,73 @@ class WeatherProvider:
             "source": "National Weather Service",
             "observed_at": datetime.now(UTC).isoformat(),
             "illustrative": False,
+        }
+
+    async def _assess_any_city(
+        self, destination: str, departure_date: date | None
+    ) -> dict[str, Any]:
+        if self._stub:
+            return self._stub_any_city(destination)
+        place = await self._geocoder.lookup(destination)
+        target = (departure_date or date.today()).isoformat()
+        try:
+            async with httpx.AsyncClient(
+                timeout=8, follow_redirects=False, trust_env=False
+            ) as client:
+                response = await client.get(
+                    OPEN_METEO_FORECAST_URL,
+                    params={
+                        "latitude": place.latitude,
+                        "longitude": place.longitude,
+                        "daily": "temperature_2m_max,weather_code",
+                        "timezone": "auto",
+                        "forecast_days": 16,
+                    },
+                )
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise RetryableNwsError("Forecast request unavailable.") from exc
+        if response.status_code == 429 or response.status_code >= 500:
+            raise RetryableNwsError("Forecast returned a retryable status.")
+        response.raise_for_status()
+        daily = response.json().get("daily", {})
+        days = daily.get("time", [])
+        observed_at = datetime.now(UTC).isoformat()
+        if target not in days:
+            return {
+                "status": WeatherStatus.UNAVAILABLE.value,
+                "high_celsius": None,
+                "summary": "Open-Meteo has no forecast for the requested date.",
+                "active_alerts": [],
+                "source": "Open-Meteo",
+                "observed_at": observed_at,
+                "illustrative": False,
+            }
+        index = days.index(target)
+        high_c = daily["temperature_2m_max"][index]
+        code = int(daily["weather_code"][index])
+        hot = high_c is not None and high_c >= 35
+        status = WeatherStatus.CAUTION if code >= 95 or hot else WeatherStatus.GO
+        return {
+            "status": status.value,
+            "high_celsius": round(high_c, 1) if high_c is not None else None,
+            "summary": WMO_SUMMARIES.get(code, "Forecast available"),
+            "active_alerts": [],
+            "source": "Open-Meteo",
+            "observed_at": observed_at,
+            "illustrative": False,
+        }
+
+    @staticmethod
+    def _stub_any_city(destination: str) -> dict[str, Any]:
+        high_c = 14 + sum(destination.casefold().encode()) % 22
+        return {
+            "status": WeatherStatus.GO.value,
+            "high_celsius": float(high_c),
+            "summary": "Deterministic local weather fixture",
+            "active_alerts": [],
+            "source": "local deterministic weather fixture",
+            "observed_at": datetime.now(UTC).isoformat(),
+            "illustrative": True,
         }
 
     @staticmethod

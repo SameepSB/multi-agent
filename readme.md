@@ -122,9 +122,9 @@ Infrastructure is Terraform (`deploy/terraform/`); workflows are in `.github/wor
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push / PR | Tests, ruff, dependency audit, Compose smoke test, `terraform fmt -check` + `validate`. |
+| `ci.yml` | manual | Tests, ruff, dependency audit, Compose smoke test, `terraform fmt -check` + `validate`. |
 | `provision-infrastructure.yml` | manual | Terraform creates the resource group, Log Analytics, ACR, Key Vault, Container Apps environment, three managed identities and role assignments. Optionally stores `OPENAI_API_KEY` in Key Vault and triggers the development deploy. |
-| `deploy-development.yml` | push to `main` / manual | Tests, applies infrastructure, builds and scans the image, publishes an SBOM, pushes to ACR, then applies Terraform with the immutable `@sha256` digest to create/update the API and worker apps. Verifies ingress and `/health/ready`, and publishes the promotion record. |
+| `deploy-development.yml` | manual | Tests, applies infrastructure, builds and scans the image, publishes an SBOM, pushes to ACR, then applies Terraform with the immutable `@sha256` digest to create/update the API and worker apps. Verifies ingress and `/health/ready`, and publishes the promotion record. |
 | `promote-production.yml` | manual, `main` only | Verifies the development run and its digest, rescans the same image, applies Terraform for `production`, verifies ingress and readiness. |
 
 #### One-time configuration
@@ -151,7 +151,7 @@ Infrastructure is Terraform (`deploy/terraform/`); workflows are in `.github/wor
 
 1. Merge the workflows to `main`, then run **Provision infrastructure** (environment `development`, tick `store_openai_secret`). This creates the Azure resources and writes the OpenAI key to Key Vault as `openai-api-key`.
 2. Complete the manual Entra `invoke` grants for the API identity.
-3. Run **Deploy development** (or tick `deploy_apps` in step 1; it also runs on every push to `main`). Note the digest and run ID in the job summary.
+3. Run **Deploy development** (or tick `deploy_apps` in step 1). Note the digest and run ID in the job summary.
 4. Run **Provision infrastructure** for `production` (with `store_openai_secret`), then run **Promote production** on `main` with the `image_digest` and `development_run_id` inputs. The workflow checks the run succeeded and that its artifact holds that exact digest. Re-run it with an earlier successful digest/run ID to roll back.
 5. Find the API URL in the deploy job (`api_fqdn` Terraform output) and call `https://<fqdn>/api/v1/comparisons` with an Entra bearer token.
 
@@ -166,6 +166,34 @@ It reuses the resource group, ACR and Key Vault from **Provision infrastructure*
 Authentication differs from the Container Apps path: the VM runs in the app's static-token mode (`APP_ENV=local`) rather than Entra/OIDC. Callers use a single bearer token, generated once and stored in Key Vault as `vm-api-token`; the worker token is generated on the VM and never leaves it. Fetch the token with `az keyvault secret show --vault-name <KEY_VAULT_NAME> --name vm-api-token --query value -o tsv`. Treat it as a shared secret and rotate it by deleting the secret and re-running the workflow. Use Container Apps if you need per-user Entra authentication. Rollback is a re-run with an earlier digest.
 
 The API rate limit, response idempotency cache, and agent task cache are bounded in-process memory; they are not shared across replicas and are lost on restart/scale-to-zero. The local Compose smoke test runs in CI; an actual Azure deployment has not yet been run.
+
+### Any city
+
+Origins and destinations are free text (letters, spaces and `.,'-`); you are not limited to the curated list in `data/travel_data.json`. The 8 curated destinations and 5 origins keep their reference prices and weather. For any other place:
+
+- **Location:** resolved with the keyless Open-Meteo geocoding API (`geocoding-api.open-meteo.com`).
+- **Weather:** a live Open-Meteo daily forecast covering the next 16 days (GO/CAUTION from weather code and temperature). Outside that window, or with no date, weather is `UNAVAILABLE` or today's. With `STUB_PROVIDERS=true`, a deterministic fixture is used.
+- **Prices:** an illustrative estimate, never a quote: flight = $60 + $0.09/km (+$120 international), hotel = per-country cost tier ($70/$120/$190/$260 per night), travel time from distance.
+- **Failures:** a name that cannot be found yields a partial result for that city (travel or weather marked unavailable) rather than failing the whole request.
+
+The travel and weather agents therefore need outbound HTTPS to `geocoding-api.open-meteo.com` and `api.open-meteo.com`, even with `STUB_PROVIDERS=true` (geocoding is always live for non-curated cities).
+
+### React frontend (local)
+
+`frontend/` is a Vite + React + TypeScript UI for the comparison API. It runs locally and is not deployed by the workflows.
+
+1. Start the three backend processes (see "Run locally without Docker"); the API must listen on `127.0.0.1:8080`.
+2. In a new terminal:
+
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+3. Open http://localhost:5173, paste the `LOCAL_API_TOKEN` value from `.env` into **Bearer token**, and click **Compare**.
+
+The dev server proxies `/api` and `/health` to the API (override with `VITE_API_TARGET`), so no CORS configuration is needed. The token is kept in `sessionStorage` only. Run `npm test` for the unit tests and `npm run build` to type-check and produce `frontend/dist`. Serving `dist` from a different origin than the API would require adding CORS or a reverse proxy.
 
 ## 1. Architecture at a glance
 

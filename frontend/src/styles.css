@@ -1,0 +1,19 @@
+body { font-family: system-ui, sans-serif; background: #f5f7fa; margin: 0; color: #1c2430; }
+main { max-width: 960px; margin: 0 auto; padding: 24px; }
+form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: end; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+input { padding: 8px; border: 1px solid #b8c2cc; border-radius: 6px; }
+button { padding: 10px 16px; border: 0; border-radius: 6px; background: #1d4ed8; color: #fff; cursor: pointer; }
+button:disabled { opacity: 0.6; cursor: wait; }
+.error { background: #fee2e2; padding: 12px; border-radius: 6px; }
+.warn { color: #b45309; }
+.recommendation { background: #e0f2fe; padding: 16px; border-radius: 8px; margin: 24px 0 16px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.card { background: #fff; padding: 16px; border-radius: 8px; border: 2px solid transparent; }
+.card.winner { border-color: #16a34a; }
+.badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #e5e7eb; }
+.badge.go { background: #bbf7d0; }
+.badge.caution { background: #fde68a; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+dd { margin: 0; text-align: right; }
+.limitations { color: #52606d; font-size: 14px; }

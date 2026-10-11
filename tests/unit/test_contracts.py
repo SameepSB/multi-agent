@@ -32,9 +32,11 @@ def test_request_bounds_city_count_and_payment_fields():
             }
         )
     with pytest.raises(ValidationError):
-        TripRequest(origin="Unknown Origin", destinations=["Denver", "Austin"])
+        TripRequest(origin="Paris; DROP TABLE", destinations=["Denver", "Austin"])
     with pytest.raises(ValidationError):
-        TripRequest(origin="New York", destinations=["Denver", "Unsupported City"])
+        TripRequest(origin="New York", destinations=["Denver", "<script>"])
+    request = TripRequest(origin="Paris", destinations=["Tokyo", "denver"])
+    assert (request.origin, request.destinations) == ("Paris", ["Tokyo", "Denver"])
 
 
 def test_canonical_money_is_minor_units_and_total_is_consistent():

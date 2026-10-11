@@ -45,10 +45,7 @@ class TripRequest(StrictModel):
     @classmethod
     def validate_origin(cls, value: str) -> str:
         normalized = normalize_place(value)
-        canonical = ORIGINS.get(normalized.casefold())
-        if canonical is None:
-            raise ValueError("origin is not supported")
-        return canonical
+        return ORIGINS.get(normalized.casefold(), normalized)
 
     @field_validator("destinations")
     @classmethod
@@ -56,10 +53,7 @@ class TripRequest(StrictModel):
         normalized = []
         for value in values:
             place = normalize_place(value)
-            canonical = DESTINATIONS.get(place.casefold())
-            if canonical is None:
-                raise ValueError("destination is not supported")
-            normalized.append(canonical)
+            normalized.append(DESTINATIONS.get(place.casefold(), place))
         if len({value.casefold() for value in normalized}) != len(normalized):
             raise ValueError("destinations must be unique")
         return normalized

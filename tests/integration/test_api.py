@@ -74,7 +74,7 @@ def test_api_rejects_invalid_payment_and_oversized_requests_before_fan_out(make_
         "/api/v1/comparisons",
         json={
             "origin": "New York",
-            "destinations": ["Denver", "Somewhere Else"],
+            "destinations": ["Denver", "Some<Place>"],
         },
     )
     assert unsupported.status_code == 422

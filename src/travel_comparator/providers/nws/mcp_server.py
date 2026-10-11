@@ -33,9 +33,7 @@ async def serve() -> None:
                     "tools": [
                         {
                             "name": "get_weather_assessment",
-                            "description": (
-                                "Assess weather for a configured supported US destination."
-                            ),
+                            "description": ("Assess weather for any destination city."),
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
